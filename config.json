@@ -1,0 +1,122 @@
+{
+    // =========================================================================
+    // STATION IDENTITY
+    // =========================================================================
+    // Callsign displayed in the web interface header and transmitted in status packets
+    "callsign": "N0CALL",
+
+    // =========================================================================
+    // SERIAL / CAT INTERFACE (Quansheng Radio)
+    // =========================================================================
+    // Serial port device path (e.g. /dev/ttyACM0 on Linux or COM3 on Windows)
+    "serial_port": "/dev/ttyACM0",
+    // Baud rate for CAT communication (firmware default: 38400)
+    "baud_rate": 38400,
+
+    // =========================================================================
+    // NETWORK & WEB / TLS SERVER
+    // =========================================================================
+    // Bind address for HTTP and HTTPS servers (0.0.0.0 listens on all interfaces)
+    "ws_host": "0.0.0.0",
+    // Standard HTTP web server port
+    "ws_port": 8081,
+    // Secure HTTPS server port (required by browsers for WebRTC audio & microphone)
+    "https_port": 8443,
+    // Path to TLS certificate file (auto-generated for 10 years if missing)
+    "cert_file": "cert.pem",
+    // Path to TLS private key file (auto-generated for 10 years if missing)
+    "key_file": "key.pem",
+
+    // =========================================================================
+    // OPENWEBRX HTTPS PROXY & OVERLAY
+    // =========================================================================
+    // Enable built-in HTTPS reverse proxy for OpenWebRX with automatic CAT overlay injection
+    "owrx_proxy_enabled": false,
+    // Destination URL of your local OpenWebRX instance to proxy
+    "owrx_backend_url": "http://127.0.0.1:8073",
+    // Dedicated HTTPS port for OpenWebRX (browsers access this port with full SSL & mic support)
+    "owrx_proxy_port": 8074,
+
+    // =========================================================================
+    // LOGGING & FLASH MEMORY WEAR PROTECTION (RAM /dev/shm & systemd)
+    // =========================================================================
+    // Logging target: "shm" (RAM /dev/shm tmpfs - protects SD card), "stdout" (systemd only), "file", or "off"
+    "log_mode": "shm",
+    // File path when log_mode is "shm" or "file"
+    "log_path": "/dev/shm/catwebservice.log",
+    // Maximum log file size in Megabytes before automatic rotation
+    "log_max_size_mb": 2,
+    // Number of rotated archive files to keep in RAM (e.g. 1 keeps .log and .log.1)
+    "log_max_backups": 1,
+    // Also mirror logs to stdout so 'journalctl -u catwebservice -f' works simultaneously
+    "log_to_stdout": true,
+
+    // =========================================================================
+    // AUDIO HARDWARE & STREAMING (ALSA / WebRTC)
+    // =========================================================================
+    // ALSA capture device for radio RX audio (e.g. "1,0" or "plughw:1,0")
+    "audio_rx_device": "1,0",
+    // ALSA playback device for radio TX audio (e.g. "1,0" or "plughw:1,0")
+    "audio_tx_device": "1,0",
+    // Internal loopback UDP port used for WebRTC Opus RTP audio stream
+    "audio_rtp_port": 4000,
+    // ffmpeg command to capture radio RX audio and encode to Opus RTP stream
+    "rx_audio_cmd": "ffmpeg -hide_banner -loglevel error -f alsa -thread_queue_size 1024 -ar 48000 -ac 1 -i {DEVICE} -c:a libopus -b:a 48k -vbr off -application voip -frame_duration 20 -f rtp rtp://127.0.0.1:4000",
+    // ffmpeg command to decode TX audio from browser and output to radio microphone
+    "tx_audio_cmd": "ffmpeg -hide_banner -loglevel error -f ogg -i pipe:0 -f alsa {DEVICE}",
+
+    // =========================================================================
+    // TRANSMITTER SAFETY & WATCHDOG
+    // =========================================================================
+    // Time-Out Timer limit in seconds (automatically drops PTT if transmit exceeds this)
+    "tot_limit_seconds": 3600,
+
+    // =========================================================================
+    // BACKGROUND SERVICES & SCANNER (APRS & DTMF Dual-Watch)
+    // =========================================================================
+    // Enable Direwolf modem process when no web clients are connected
+    "use_direwolf": false,
+    // Command line used to execute Direwolf in the background
+    "direwolf_cmd": "direwolf -c direwolf.conf -t 0",
+    // Frequency in Hz for APRS monitoring (144.800 MHz in Europe, 144.390 MHz in USA)
+    "aprs_freq": 144800000,
+    // Frequency in Hz for DTMF monitoring (e.g. 433.000 MHz)
+    "dtmf_freq": 433000000,
+    // Scan dwell speed in hardware ticks per frequency during dual-watch (1 tick = 10 ms)
+    "background_services_scan_ticks": 7,
+    // Delay in seconds before resuming scan after carrier loss during background dual-watch
+    "background_services_scan_delay": 2.0,
+
+    // =========================================================================
+    // MQTT BROKER SETTINGS
+    // =========================================================================
+    // MQTT broker connection URL (e.g. tcp://127.0.0.1:1883 or ssl://...)
+    "mqtt_broker": "tcp://127.0.0.1:1883",
+    // Client ID presented when connecting to the MQTT broker
+    "mqtt_client_id": "quansheng_transceiver",
+    // MQTT username (leave empty if broker requires no authentication)
+    "mqtt_username": "",
+    // MQTT password (leave empty if broker requires no authentication)
+    "mqtt_password": "",
+    // Retain flag for published MQTT messages
+    "mqtt_retain": false,
+    // Quality of Service level for MQTT publishing (0, 1, or 2)
+    "mqtt_qos": 0,
+
+    // =========================================================================
+    // MQTT CHANNELS & TOPICS
+    // =========================================================================
+    // Enable publishing decoded APRS packets as JSON to MQTT
+    "mqtt_aprs_enabled": false,
+    // Topic prefix for decoded APRS packets
+    "mqtt_aprs_topic": "aprs",
+    // Enable publishing decoded DTMF reports from radio to MQTT
+    "mqtt_dtmf_enabled": false,
+    // Topic for DTMF reports
+    "mqtt_dtmf_topic": "dtmf",
+    // Enable publishing radio parameters (frequency, modulation, power, PTT, squelch) to MQTT
+    "mqtt_status_enabled": false,
+    // Topic for radio status and PTT events
+    "mqtt_status_topic": "radio/status"
+}
+

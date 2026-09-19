@@ -1,0 +1,2165 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Quanshengstein</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --panel-bg: #1e1e1e;
+            --text-main: #e0e0e0;
+            --accent: #2196F3;
+            --accent-hover: #1976D2;
+            --danger: #f44336;
+            --vfo-color: #4CAF50;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            padding-bottom: 350px; 
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 600px;
+            background: var(--panel-bg);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            border: 1px solid #333;
+            box-sizing: border-box;
+        }
+
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; padding-bottom: 10px; margin-bottom: 20px; }
+        .header h1 { margin: 0; font-size: 20px; color: #fff; text-shadow: 0 0 10px rgba(255,255,255,0.2); }
+        .system-stats { text-align: right; display: flex; flex-direction: column; justify-content: center; }
+        #ws-status { font-size: 14px; font-weight: bold; }
+        #sys-stats-text { font-size: 11px; color: #888; margin-top: 2px; font-family: monospace; }
+
+        /* VFO DISPLAY */
+        .vfo-container {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            align-items: center;
+            background: #000;
+            padding: 10px 15px;
+            border-radius: 8px;
+            border: inset 2px #333;
+            margin-bottom: 15px;
+            cursor: text;
+            min-height: 100px;
+            overflow: hidden;
+        }
+        .vfo-top-row { display: flex; justify-content: space-between; align-items: center; width: 100%; z-index: 1; margin-bottom: 5px; }
+        #vfo-channel-name { color: var(--accent); font-size: 15px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; text-shadow: 0 0 5px rgba(33, 150, 243, 0.5); flex: 1; }
+        #vfo-status-info { color: var(--vfo-color); font-size: 11px; font-weight: bold; font-family: monospace; text-shadow: 0 0 5px rgba(76, 175, 80, 0.5); opacity: 0.8; text-align: center; flex: 1; }
+        
+        #vfo-mod-toggle { background: rgba(33, 150, 243, 0.1); border: 1px solid var(--accent); color: var(--accent); border-radius: 4px; padding: 2px 10px; cursor: pointer; font-weight: bold; font-size: 14px; transition: all 0.2s; box-shadow: 0 0 5px rgba(33, 150, 243, 0.3); }
+        #vfo-mod-toggle:hover { background: var(--accent); color: #fff; }
+
+        .vfo-middle-row { display: flex; align-items: baseline; justify-content: center; width: 100%; z-index: 1; }
+        .vfo-digit { font-family: 'Courier New', Courier, monospace; font-size: 48px; font-weight: bold; color: var(--vfo-color); text-shadow: 0 0 10px rgba(76, 175, 80, 0.5); padding: 0 2px; cursor: ns-resize; user-select: none; touch-action: none; }
+        .vfo-digit:hover { background: rgba(255, 255, 255, 0.1); border-radius: 4px; }
+        .vfo-dot { font-family: 'Courier New', Courier, monospace; font-size: 48px; font-weight: bold; color: var(--vfo-color); margin: 0 2px; }
+        .vfo-unit { font-size: 20px; color: #888; margin-left: 8px; font-weight: bold; }
+        #manual-freq-input { display: none; width: 100%; font-size: 38px; background: transparent; color: var(--vfo-color); border: none; text-align: center; font-family: 'Courier New', Courier, monospace; outline: none; }
+
+        /* S-METER STYLES */
+        .vfo-bottom-row { width: 100%; height: 12px; margin-top: 8px; border-top: 1px solid rgba(255, 255, 255, 0.1); z-index: 1; background: rgba(0, 0, 0, 0.2); border-radius: 0 0 4px 4px; }
+        .s-meter-wrapper { display: flex; align-items: center; width: 100%; height: 100%; padding: 0 5px; box-sizing: border-box; font-family: 'Courier New', Courier, monospace; font-size: 11px; color: #888; }
+        .s-meter-dbm { width: 58px; text-align: left; color: #777; font-size: 10px; }
+        .s-bar.active-gray { background: #666; box-shadow: 0 0 3px #444; }
+        .s-meter-plus.dimmed { color: #666; font-weight: normal; }
+        .s-meter-readout { width: 32px; text-align: left; transition: all 0.2s; }
+        .s-meter-sql-active { font-weight: bold; color: #fff; text-shadow: 0 0 8px rgba(255, 255, 255, 0.8); }
+        .s-meter-bars { display: flex; flex-grow: 1; height: 6px; margin: 0 8px; gap: 2px; background: rgba(0, 0, 0, 0.4); border-radius: 3px; overflow: hidden; }
+        .s-bar { flex-grow: 1; background: #333; border-radius: 1px; transition: background 0.05s ease-out; }
+        .s-bar.active-normal { background: #4CAF50; box-shadow: 0 0 5px #4CAF50; }
+        .s-bar.active-danger { background: #f44336; box-shadow: 0 0 5px #f44336; }
+        .s-meter-plus { width: 35px; text-align: right; color: #f44336; font-weight: bold; }
+
+        /* RECENTLY USED */
+        .history-tiles-wrapper { display: flex; gap: 8px; justify-content: center; margin-bottom: 25px; flex-wrap: wrap; }
+        .history-tile { background: #2a2a2a; border: 1px solid #444; border-radius: 6px; padding: 6px 12px; font-size: 13px; font-weight: bold; color: var(--accent); cursor: pointer; transition: all 0.2s; text-align: center; min-width: 60px; }
+        .history-tile:hover { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 0 8px rgba(33, 150, 243, 0.4); }
+
+        /* PRESETS LIST WITH SCANNER MECHANICS */
+        .presets-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .presets-header h2 { margin: 0; font-size: 16px; color: #aaa; }
+        .btn-action { background: #444; color: #fff; border: 1px solid #555; border-radius: 5px; width: 32px; height: 32px; font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.2s; }
+        .btn-action.primary { background: var(--accent); border: none; }
+        .btn-action:hover { filter: brightness(1.2); }
+
+        .btn-scan {
+            background: #2e2e2e;
+            color: #ddd;
+            border: 1px solid #555;
+            border-radius: 5px;
+            height: 32px;
+            padding: 0 10px;
+            font-size: 11px;
+            font-weight: bold;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            transition: all 0.2s;
+            user-select: none;
+            white-space: nowrap;
+        }
+        .btn-scan:hover {
+            background: #3e3e3e;
+            color: #fff;
+            border-color: #777;
+        }
+        .btn-scan.active-tab-scan {
+            background: #2196F3 !important;
+            color: #fff !important;
+            border-color: #2196F3 !important;
+            box-shadow: 0 0 10px rgba(33, 150, 243, 0.7);
+        }
+        .btn-scan.active-all-scan {
+            background: #9c27b0 !important;
+            color: #fff !important;
+            border-color: #ba68c8 !important;
+            box-shadow: 0 0 10px rgba(156, 39, 176, 0.7);
+        }
+
+        .scan-group-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #1e1e1e;
+            border-left: 3px solid #9c27b0;
+            padding: 6px 10px;
+            border-radius: 4px;
+            margin-top: 8px;
+            margin-bottom: 4px;
+            font-size: 12px;
+            color: #ccc;
+        }
+        .scan-group-title {
+            font-weight: bold;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .scan-group-badge {
+            background: rgba(156, 39, 176, 0.25);
+            color: #ce93d8;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: bold;
+        }
+
+        #scan-config-panel { display:none; flex-direction:column; gap:8px; background:#222; padding:12px; border-radius:8px; margin-bottom:15px; border:1px solid #444; }
+
+        .preset-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; overflow-x: hidden; padding-right: 5px; }
+
+        .preset-list.scanning-mode .preset-item { transition: order 0s, opacity 0.3s; cursor: pointer; }
+        .preset-list.scanning-mode .preset-item.scan-enabled { order: -1 !important; }
+        .preset-list.scanning-mode .preset-item:not(.scan-enabled) { opacity: 0.4; order: 1 !important; cursor: pointer; }
+        .preset-item.not-scanned { opacity: 0.45; }
+        .preset-item.not-scanned:hover { opacity: 0.8; }
+
+        .preset-item {
+            position: relative;
+            display: flex;
+            align-items: stretch;
+            background: #2a2a2a;
+            border-radius: 8px;
+            border: 1px solid #444;
+            overflow: hidden;
+            width: 100%;
+            transition: box-shadow 0.1s, border-color 0.1s;
+        }
+
+        .preset-item.currently-scanned {
+            border-color: var(--accent);
+            box-shadow: inset 0 0 15px rgba(33, 150, 243, 0.4);
+        }
+
+        .preset-bg-meter {
+            position: absolute;
+            left: 0; top: 0; bottom: 0;
+            width: 0%;
+            z-index: 0;
+            transition: width 0.3s ease-out, background 0.3s ease-out;
+        }
+
+        .preset-content {
+            position: relative;
+            z-index: 1;
+            display: flex;
+            width: 100%;
+            text-shadow: 1px 1px 2px #000, 0 0 8px #000;
+        }
+
+        .preset-scan-check { width: 10%; display: flex; justify-content: center; align-items: center; background: rgba(0,0,0,0.3); border-right: 1px solid #333; }
+        .preset-info { width: 48%; padding: 10px 8px; cursor: pointer; display: flex; flex-direction: column; justify-content: center; gap: 3px; box-sizing: border-box; transition: background 0.2s; }
+        .preset-info:hover { background: rgba(33, 150, 243, 0.2); }
+        .preset-name { font-weight: bold; font-size: 14px; word-wrap: break-word; line-height: 1.2; color: #fff;}
+        .preset-meta { font-size: 11px; color: #ddd; display: flex; justify-content: space-between; }
+        
+        .preset-reorder { width: 18%; display: flex; justify-content: space-evenly; align-items: center; border-left: 1px solid #333; border-right: 1px solid #333; background: rgba(0,0,0,0.1); box-sizing: border-box; }
+        .btn-move { background: #3a3a3a; color: #ccc; border: 1px solid #555; border-radius: 5px; width: 42%; height: 28px; font-size: 12px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.2s; }
+        .btn-move:hover { background: #555; color: #fff; border-color: var(--accent); }
+
+        .preset-config-wrapper { width: 12%; display: flex; justify-content: center; align-items: center; border-right: 1px solid #333; background: rgba(0,0,0,0.15); box-sizing: border-box; }
+        .btn-config { background: transparent; color: #aaa; border: none; font-size: 15px; cursor: pointer; width: 100%; height: 100%; transition: all 0.2s; display: flex; align-items: center; justify-content: center; }
+        .btn-config:hover { color: var(--accent); background: rgba(33, 150, 243, 0.25); }
+
+        .preset-delete-wrapper { width: 12%; display: flex; justify-content: center; align-items: center; background: rgba(0,0,0,0.2); box-sizing: border-box; }
+        .btn-delete { background: transparent; color: #aaa; border: none; font-size: 17px; cursor: pointer; width: 100%; height: 100%; transition: all 0.2s; display: flex; align-items: center; justify-content: center; }
+        .btn-delete:hover { color: var(--danger); background: rgba(244, 67, 54, 0.2); }
+
+        /* TABS */
+        .tabs-container {
+            display: flex;
+            align-items: center;
+            background: #181818;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 6px 8px;
+            margin-bottom: 12px;
+        }
+        .tabs-nav-bar {
+            width: 100%;
+            display: flex;
+            align-items: center;
+        }
+        .tabs-list {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            overflow-x: auto;
+            scrollbar-width: thin;
+            width: 100%;
+        }
+        .tab-btn {
+            background: #282828;
+            border: 1px solid #444;
+            color: #bbb;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: bold;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.2s;
+            user-select: none;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .tab-btn:hover {
+            background: #383838;
+            color: #fff;
+            border-color: #666;
+        }
+        .tab-btn.active {
+            background: var(--accent);
+            color: #fff;
+            border-color: var(--accent);
+            box-shadow: 0 0 10px rgba(33, 150, 243, 0.4);
+        }
+        .tab-badge {
+            font-size: 10px;
+            background: rgba(0, 0, 0, 0.35);
+            border-radius: 10px;
+            padding: 1px 6px;
+            font-weight: normal;
+        }
+        .tab-btn-add {
+            background: rgba(33, 150, 243, 0.15);
+            border: 1px dashed var(--accent);
+            color: var(--accent);
+            padding: 5px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: bold;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.2s;
+            flex-shrink: 0;
+        }
+        .tab-btn-add:hover {
+            background: var(--accent);
+            color: #fff;
+        }
+        .btn-tab-tool {
+            background: #2e2e2e;
+            color: #ccc;
+            border: 1px solid #484848;
+            border-radius: 4px;
+            padding: 5px 10px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .btn-tab-tool:hover {
+            background: #444;
+            color: #fff;
+            border-color: #666;
+        }
+        .btn-tab-tool.danger:hover {
+            background: var(--danger);
+            color: #fff;
+            border-color: var(--danger);
+        }
+        .cfg-section-title {
+            font-size: 11px;
+            font-weight: bold;
+            color: var(--accent);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 6px;
+        }
+        #header-callsign {
+            color: var(--accent);
+            font-weight: bold;
+            margin-left: 6px;
+            text-shadow: 0 0 10px rgba(33, 150, 243, 0.5);
+        }
+
+        /* CHANNEL EDIT MODAL */
+        .modal-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.75);
+            backdrop-filter: blur(4px);
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 15px;
+            box-sizing: border-box;
+        }
+        .modal-card {
+            background: #1e1e1e;
+            border: 1px solid #444;
+            border-radius: 10px;
+            width: 100%;
+            max-width: 440px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            animation: modalFadeIn 0.2s ease-out;
+        }
+        @keyframes modalFadeIn {
+            from { opacity: 0; transform: scale(0.95); }
+            to { opacity: 1; transform: scale(1); }
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            background: #252525;
+            border-bottom: 1px solid #333;
+        }
+        .modal-header h3 {
+            margin: 0;
+            font-size: 16px;
+            color: #fff;
+        }
+        .modal-close {
+            background: transparent;
+            border: none;
+            color: #aaa;
+            font-size: 18px;
+            cursor: pointer;
+            padding: 0 4px;
+        }
+        .modal-close:hover {
+            color: #fff;
+        }
+        .modal-body {
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            overflow-y: auto;
+            max-height: 75vh;
+            box-sizing: border-box;
+        }
+        .modal-label {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            font-size: 12px;
+            color: #aaa;
+        }
+        .modal-input, .modal-select {
+            background: #111;
+            border: 1px solid #444;
+            border-radius: 5px;
+            color: #fff;
+            padding: 8px 10px;
+            font-size: 14px;
+            outline: none;
+            box-sizing: border-box;
+            width: 100%;
+        }
+        .modal-input:focus, .modal-select:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 5px rgba(33, 150, 243, 0.4);
+        }
+        .modal-row {
+            display: flex;
+            gap: 10px;
+        }
+        .modal-footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            padding: 12px 16px;
+            background: #252525;
+            border-top: 1px solid #333;
+        }
+        .btn-modal {
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: bold;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s;
+        }
+        .btn-modal.cancel {
+            background: #333;
+            color: #ccc;
+        }
+        .btn-modal.cancel:hover {
+            background: #444;
+            color: #fff;
+        }
+        .btn-modal.save {
+            background: var(--accent);
+            color: #fff;
+        }
+        .btn-modal.save:hover {
+            filter: brightness(1.2);
+        }
+
+        @media (max-width: 380px) {
+            .vfo-digit, .vfo-dot { font-size: 38px; }
+            .vfo-container { min-height: 90px; padding: 10px 5px; }
+            .vfo-unit { font-size: 16px; }
+            #manual-freq-input { font-size: 32px; }
+        }
+
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: var(--panel-bg); }
+        ::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #555; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <div class="header">
+            <h1>Quanshengstein <span id="header-callsign"></span></h1>
+            <div class="system-stats">
+                <span id="ws-status" style="color: #888;">Connecting...</span>
+                <span id="sys-stats-text">CPU: --% | Temp: --°C | Ping: -- ms</span>
+                <button onclick="toggleLogModal()" style="background:#222; border:1px solid #444; color:#aaa; border-radius:4px; padding:2px 8px; font-size:11px; cursor:pointer;" title="Live Logs (Pamięć RAM)">📜 Logs</button>
+            </div>
+        </div>
+
+        <div class="vfo-container" id="vfo-display" title="Double-click to enter frequency">
+            <canvas id="vfo-spectrum" style="position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index: 0;"></canvas>
+            
+            <div class="vfo-top-row">
+                <div id="vfo-channel-name">VFO / MANUAL</div>
+                <div id="vfo-status-info">T: OFF | S: OFF</div>
+                <div style="text-align: right; flex: 1;">
+                    <button id="vfo-mod-toggle" onclick="toggleModulation(event)" title="Toggle modulation AM/FM">FM</button>
+                </div>
+            </div>
+            
+            <div class="vfo-middle-row">
+                <input type="number" id="manual-freq-input" step="0.001" min="110.000" max="480.000" placeholder="e.g. 145.500">
+                <div id="vfo-digits-wrapper" style="display: flex; align-items: baseline;"></div>
+                <span class="vfo-unit" id="vfo-unit">MHz</span>
+            </div>
+
+            <div class="vfo-bottom-row" id="s-meter-placeholder">
+                <div class="s-meter-wrapper">
+                    <div id="s-meter-dbm" class="s-meter-dbm">-127 dBm</div>
+                    <div id="s-meter-text" class="s-meter-readout">S0</div>
+                    <div class="s-meter-bars">
+                        <div class="s-bar" id="s-bar-1"></div><div class="s-bar" id="s-bar-2"></div><div class="s-bar" id="s-bar-3"></div>
+                        <div class="s-bar" id="s-bar-4"></div><div class="s-bar" id="s-bar-5"></div><div class="s-bar" id="s-bar-6"></div>
+                        <div class="s-bar" id="s-bar-7"></div><div class="s-bar" id="s-bar-8"></div><div class="s-bar" id="s-bar-9"></div>
+                    </div>
+                    <div id="s-meter-plus-text" class="s-meter-plus"></div>
+                </div>
+            </div>
+        </div> 
+
+        <div id="history-tiles" class="history-tiles-wrapper"></div>
+
+        <div class="presets-header">
+            <h2>Saved Channels</h2>
+            <div style="display:flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+                <button class="btn-action" id="btn-scan-config" onclick="toggleScanConfig()" title="Scanner & Tab Configuration">⚙️</button>
+                <button class="btn-scan" id="btn-scan-tab" onclick="toggleScanTab()" title="Scan selected channels in current tab">SCAN</button>
+                <button class="btn-scan" id="btn-scan-all" onclick="toggleScanAll()" title="Scan all selected channels across all tabs">SCAN ALL</button>
+                <a class="btn-scan" id="btn-owrx" href="/owrx/" target="_blank" style="display:none; text-decoration:none; align-items:center; justify-content:center; background:#ff9800; color:#fff;" title="Open OpenWebRX (SDR Receiver with CAT)">OWRX</a>
+                <button class="btn-action primary" onclick="saveCurrentSettingsAsPreset()" title="Save current settings as new channel">+</button>
+            </div>
+        </div>
+
+        <div class="tabs-container" id="tabs-container">
+            <div class="tabs-nav-bar">
+                <div class="tabs-list" id="tabs-list"></div>
+            </div>
+        </div>
+
+        <div id="scan-config-panel">
+            <div class="cfg-section">
+                <div class="cfg-section-title">Tab Configuration</div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <span id="tab-toolbar-info" style="font-size: 12px; color: #bbb; font-family: monospace;">Tab: Main</span>
+                    <button class="tab-btn-add" onclick="addNewTab()" title="Add new tab">+ New Tab</button>
+                </div>
+                <div class="tab-toolbar-actions" style="display: flex; gap: 6px; flex-wrap: wrap;">
+                    <button class="btn-tab-tool" onclick="moveActiveTab(-1)" title="Move tab left">◀ Move Left</button>
+                    <button class="btn-tab-tool" onclick="moveActiveTab(1)" title="Move tab right">Move Right ▶</button>
+                    <button class="btn-tab-tool" onclick="renameActiveTab()" title="Rename tab">✏️ Rename</button>
+                    <button class="btn-tab-tool danger" onclick="deleteActiveTab()" title="Delete tab">🗑️ Delete</button>
+                </div>
+            </div>
+
+            <div class="cfg-section" style="border-top: 1px solid #333; padding-top: 10px; margin-top: 5px;">
+                <div class="cfg-section-title">Scanner Configuration (saved in radio_db.json)</div>
+                <label style="font-size:12px; color:#aaa; display:flex; justify-content:space-between; align-items:center;">
+                    <span>Scanner Speed (Hardware Ticks):</span>
+                    <span id="scan-speed-val" style="font-family:monospace; font-weight:bold; color:var(--accent); background:#111; padding:2px 8px; border-radius:4px; border:1px solid #444;">25 (250 ms)</span>
+                </label>
+                <input type="range" id="scan-speed" min="0" max="100" step="1" value="25" oninput="updateScanConfig()" style="width: 100%; margin: 6px 0; accent-color: var(--accent); cursor:pointer;">
+                <div style="display:flex; justify-content:space-between; font-size:10px; color:#888; margin-bottom:8px; user-select:none; padding:0 2px;">
+                    <span onclick="updateScanConfig(5)" style="cursor:pointer;" title="5 ticks (50 ms)">5 (50 ms)</span>
+                    <span onclick="updateScanConfig(25)" style="cursor:pointer;" title="25 ticks (250 ms)">25 (250 ms)</span>
+                    <span onclick="updateScanConfig(50)" style="cursor:pointer;" title="50 ticks (500 ms)">50 (500 ms)</span>
+                    <span onclick="updateScanConfig(75)" style="cursor:pointer;" title="75 ticks (750 ms)">75 (750 ms)</span>
+                    <span onclick="updateScanConfig(100)" style="cursor:pointer;" title="100 ticks (1000 ms)">100 (1000 ms)</span>
+                </div>
+                
+                <label style="font-size:12px; color:#aaa; margin-top:5px; display:block;">Signal Detection Action (Squelch):</label>
+                <select id="scan-action" onchange="updateScanConfig()" style="width: 100%; background:#111; color:#fff; border:1px solid #555; padding:6px; border-radius:4px; margin-top: 4px;">
+                    <option value="pause" selected>Pause while carrier active</option>
+                    <option value="stop">Stop scan and monitor channel</option>
+                    <option value="ignore">Ignore and keep scanning</option>
+                </select>
+
+                <div id="scan-delay-container" style="margin-top: 8px;">
+                    <label style="font-size:12px; color:#aaa; display:flex; justify-content:space-between; align-items:center;">
+                        <span>Resume Delay After Carrier Loss:</span>
+                        <span id="scan-delay-val" style="font-family:monospace; font-weight:bold; color:var(--accent); background:#111; padding:2px 8px; border-radius:4px; border:1px solid #444;">2.0 s</span>
+                    </label>
+                    <input type="range" id="scan-resume-delay" min="0" max="10" step="0.1" value="2.0" oninput="updateScanResumeDelay()" style="width: 100%; margin: 6px 0; accent-color: var(--accent); cursor:pointer;">
+                    <div style="display:flex; justify-content:space-between; font-size:10px; color:#888; margin-bottom:4px; user-select:none; padding:0 2px;">
+                        <span onclick="updateScanResumeDelay(0)" style="cursor:pointer;" title="0.0 s (No delay)">0 s</span>
+                        <span onclick="updateScanResumeDelay(2)" style="cursor:pointer;" title="2.0 s">2 s</span>
+                        <span onclick="updateScanResumeDelay(4)" style="cursor:pointer;" title="4.0 s">4 s</span>
+                        <span onclick="updateScanResumeDelay(6)" style="cursor:pointer;" title="6.0 s">6 s</span>
+                        <span onclick="updateScanResumeDelay(8)" style="cursor:pointer;" title="8.0 s">8 s</span>
+                        <span onclick="updateScanResumeDelay(10)" style="cursor:pointer;" title="10.0 s">10 s</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="preset-list" id="preset-list"></div>
+    </div>
+
+    <!-- CHANNEL EDIT MODAL -->
+    <div id="channel-edit-modal" class="modal-overlay" style="display: none;" onclick="if(event.target === this) closeChannelEditModal();">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3>Edit Channel</h3>
+                <button class="modal-close" onclick="closeChannelEditModal()" title="Close">✖</button>
+            </div>
+            <div class="modal-body">
+                <label class="modal-label">
+                    Channel Name:
+                    <input type="text" id="edit-ch-name" class="modal-input" placeholder="e.g. SR3PO">
+                </label>
+                <label class="modal-label">
+                    Frequency (MHz):
+                    <input type="number" id="edit-ch-freq" class="modal-input" step="0.0001" min="110.0" max="480.0" placeholder="e.g. 145.5500">
+                </label>
+                <div class="modal-row">
+                    <label class="modal-label" style="flex:1;">
+                        Modulation:
+                        <select id="edit-ch-mod" class="modal-select">
+                            <option value="FM">FM</option>
+                            <option value="NFM">NFM</option>
+                            <option value="AM">AM</option>
+                            <option value="USB">USB</option>
+                            <option value="LSB">LSB</option>
+                        </select>
+                    </label>
+                    <label class="modal-label" style="flex:1;">
+                        TX Power:
+                        <select id="edit-ch-pwr" class="modal-select">
+                            <option value="7">7 (Max / 5W)</option>
+                            <option value="6">6</option>
+                            <option value="5">5</option>
+                            <option value="4">4 (Med)</option>
+                            <option value="3">3</option>
+                            <option value="2">2</option>
+                            <option value="1">1 (Min / Low)</option>
+                        </select>
+                    </label>
+                </div>
+                <div class="modal-row">
+                    <label class="modal-label" style="flex:1;">
+                        Shift Direction:
+                        <select id="edit-ch-shift-dir" class="modal-select">
+                            <option value="0">Simplex (None)</option>
+                            <option value="1">+ (Positive)</option>
+                            <option value="2">- (Negative)</option>
+                        </select>
+                    </label>
+                    <label class="modal-label" style="flex:1;">
+                        Offset Value (MHz):
+                        <input type="number" id="edit-ch-shift-val" class="modal-input" step="0.025" placeholder="e.g. 7.600 or 0.600">
+                    </label>
+                </div>
+                <div class="modal-row">
+                    <label class="modal-label" style="flex:1;">
+                        CTCSS (Hz):
+                        <input type="number" id="edit-ch-ctcss" class="modal-input" step="0.1" placeholder="e.g. 110.9 (0 = OFF)">
+                    </label>
+                    <label class="modal-label" style="flex:1;">
+                        DCS (Code):
+                        <input type="number" id="edit-ch-dcs" class="modal-input" step="1" placeholder="e.g. 23 (0 = OFF)">
+                    </label>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- SYSTEM LOGS MODAL (RAM BUFFER) -->
+    <div id="log-modal" class="modal-overlay" style="display: none;" onclick="if(event.target === this) closeLogModal();">
+        <div class="modal-card" style="max-width: 900px; width: 96%; height: 82vh; display: flex; flex-direction: column; background: #161b22; border: 1px solid #30363d;">
+            <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #30363d; padding-bottom: 8px;">
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <h3 style="margin:0; font-size:16px;">📜 System Live Logs</h3>
+                    <span style="font-size:11px; background:#1b5e20; color:#a5d6a7; padding:2px 6px; border-radius:4px; font-weight:bold;">RAM Memory</span>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <label style="font-size:12px; display:flex; align-items:center; gap:4px; cursor:pointer; color:#ccc;">
+                        <input type="checkbox" id="log-autoscroll" checked> Auto-scroll
+                    </label>
+                    <button onclick="clearLogDisplay()" class="btn-action" style="padding:4px 8px; font-size:11px;" title="Clear view">Clear</button>
+                    <a href="/logs" target="_blank" class="btn-action" style="text-decoration:none; padding:4px 8px; font-size:11px; display:inline-flex; align-items:center;" title="Open raw logs">Raw</a>
+                    <button class="modal-close" onclick="closeLogModal()" title="Close">✖</button>
+                </div>
+            </div>
+            <div id="log-console-container" style="flex:1; background:#0d1117; border:1px solid #21262d; border-radius:6px; margin:8px 0; padding:10px; overflow-y:auto; font-family:'Consolas', 'Courier New', Courier, monospace; font-size:12px; line-height:1.45; color:#c9d1d9; white-space:pre-wrap; word-break:break-all; user-select:text;">
+                <div style="color:#8b949e;">Loading logs from RAM memory...</div>
+            </div>
+            <div class="modal-footer" style="padding: 6px 4px 0 4px; font-size: 11px; color: #8b949e; display: flex; justify-content: space-between; border-top: 1px solid #21262d;">
+                <span>🛡️ Streaming from RAM buffer (Zero flash / SD card wear)</span>
+                <span id="log-line-counter">0 lines</span>
+            </div>
+        </div>
+    </div>
+    </div>
+
+    <!-- Load WebRTC PTT widget from owrx.js -->
+    <script src="owrx.js"></script>
+
+    <!-- SCANNER SCRIPT AND UI LOGIC -->
+    <script>
+        let currentFreq = 145500000;
+        let currentMod = "FM";
+        let uiSocket = null;
+        let tabs = [];
+        let activeTabIdx = 0;
+        let currentCallsign = "";
+        let presets = [];
+        let hashUpdateTimeout = null;
+
+        function getActivePresets() {
+            if (!tabs || tabs.length === 0) return [];
+            if (activeTabIdx < 0 || activeTabIdx >= tabs.length) activeTabIdx = 0;
+            return tabs[activeTabIdx].presets || [];
+        }
+
+        function renderTabs() {
+            const tabsList = document.getElementById('tabs-list');
+            const toolbarInfo = document.getElementById('tab-toolbar-info');
+            if (!tabsList) return;
+
+            tabsList.innerHTML = '';
+
+            if (!tabs || tabs.length === 0) {
+                tabs = [{ name: "Main", presets: [] }];
+                activeTabIdx = 0;
+            }
+
+            if (activeTabIdx >= tabs.length) {
+                activeTabIdx = Math.max(0, tabs.length - 1);
+            }
+
+            tabs.forEach((tab, index) => {
+                let btn = document.createElement('button');
+                btn.className = `tab-btn ${index === activeTabIdx ? 'active' : ''}`;
+                let count = (tab.presets && tab.presets.length) ? tab.presets.length : 0;
+                btn.innerHTML = `<span>${tab.name}</span><span class="tab-badge">${count}</span>`;
+                btn.onclick = () => switchTab(index);
+                btn.ondblclick = () => { if (index === activeTabIdx) renameActiveTab(); };
+                tabsList.appendChild(btn);
+            });
+
+            if (toolbarInfo) {
+                let curTab = tabs[activeTabIdx];
+                let pCount = curTab && curTab.presets ? curTab.presets.length : 0;
+                let countLabel = pCount === 1 ? 'channel' : 'channels';
+                toolbarInfo.innerText = `Tab: ${curTab ? curTab.name : ''} (${pCount} ${countLabel})`;
+            }
+        }
+
+        function switchTab(index) {
+            if (scanActive) {
+                window.stopScan(true);
+            }
+            if (index >= 0 && index < tabs.length) {
+                activeTabIdx = index;
+                try { localStorage.setItem('quansheng_active_tab', index); } catch(e) {}
+                presets = getActivePresets();
+                renderTabs();
+                renderPresets();
+            }
+        }
+
+        function addNewTab() {
+            if (scanActive) {
+                alert("Stop scanning before adding a tab.");
+                return;
+            }
+            let name = prompt("Enter name for new tab:", "New Tab");
+            if (!name || !name.trim()) return;
+            tabs.push({
+                name: name.trim(),
+                presets: []
+            });
+            activeTabIdx = tabs.length - 1;
+            try { localStorage.setItem('quansheng_active_tab', activeTabIdx); } catch(e) {}
+            presets = getActivePresets();
+            renderTabs();
+            renderPresets();
+            syncTabsToBackend();
+        }
+
+        function renameActiveTab() {
+            if (scanActive) {
+                alert("Stop scanning before renaming tab.");
+                return;
+            }
+            let curTab = tabs[activeTabIdx];
+            if (!curTab) return;
+            let newName = prompt("Rename tab:", curTab.name);
+            if (!newName || !newName.trim()) return;
+            curTab.name = newName.trim();
+            renderTabs();
+            syncTabsToBackend();
+        }
+
+        function moveActiveTab(direction) {
+            if (scanActive) {
+                alert("Stop scanning before moving tab.");
+                return;
+            }
+            let newIdx = activeTabIdx + direction;
+            if (newIdx < 0 || newIdx >= tabs.length) return;
+            let temp = tabs[activeTabIdx];
+            tabs[activeTabIdx] = tabs[newIdx];
+            tabs[newIdx] = temp;
+            activeTabIdx = newIdx;
+            try { localStorage.setItem('quansheng_active_tab', activeTabIdx); } catch(e) {}
+            presets = getActivePresets();
+            renderTabs();
+            renderPresets();
+            syncTabsToBackend();
+        }
+
+        function deleteActiveTab() {
+            if (scanActive) {
+                alert("Stop scanning before deleting tab.");
+                return;
+            }
+            if (tabs.length <= 1) {
+                alert("Cannot delete the only tab!");
+                return;
+            }
+            let curTab = tabs[activeTabIdx];
+            let count = (curTab && curTab.presets) ? curTab.presets.length : 0;
+            if (confirm(`Are you sure you want to delete tab "${curTab.name}" and all its channels (${count})?`)) {
+                tabs.splice(activeTabIdx, 1);
+                if (activeTabIdx >= tabs.length) {
+                    activeTabIdx = tabs.length - 1;
+                }
+                try { localStorage.setItem('quansheng_active_tab', activeTabIdx); } catch(e) {}
+                presets = getActivePresets();
+                renderTabs();
+                renderPresets();
+                syncTabsToBackend();
+            }
+        }
+
+        function syncTabsToBackend() {
+            if (uiSocket && uiSocket.readyState === WebSocket.OPEN) {
+                uiSocket.send(JSON.stringify({ cmd: "update_tabs", tabs: tabs }));
+            }
+        }
+
+        function setChannelName(name) {
+            document.getElementById('vfo-channel-name').innerText = name || "VFO / MANUAL";
+        }
+
+        window.toggleModulation = function(event) {
+            if(event) event.stopPropagation(); 
+            currentMod = currentMod === "FM" ? "AM" : "FM";
+            document.getElementById('vfo-mod-toggle').innerText = currentMod;
+            setChannelName(""); 
+            debounceHashUpdate();
+        };
+
+        function updateSMeter(dbm, sql) {
+            let sUnit = 0; let over9 = 0;
+            if (dbm >= -73) { sUnit = 9; over9 = dbm - (-73); } 
+            else if (dbm >= -127) { sUnit = Math.max(0, Math.floor((dbm + 127) / 6)); }
+
+            const textEl = document.getElementById('s-meter-text');
+            const plusEl = document.getElementById('s-meter-plus-text');
+            const dbmEl = document.getElementById('s-meter-dbm');
+
+            if (dbmEl) dbmEl.innerText = dbm + " dBm";
+
+            if (sql === 1) { textEl.classList.add('s-meter-sql-active'); plusEl.classList.remove('dimmed'); } 
+            else { textEl.classList.remove('s-meter-sql-active'); plusEl.classList.add('dimmed'); }
+
+            textEl.innerText = (sUnit > 0 || over9 > 0) ? (over9 > 0 ? "S9" : "S" + sUnit) : "S0";
+            plusEl.innerText = over9 > 0 ? "+" + over9 : "";
+
+            for (let i = 1; i <= 9; i++) {
+                const bar = document.getElementById('s-bar-' + i);
+                if (bar) {
+                    bar.className = 's-bar'; 
+                    if (i <= sUnit) {
+                        if (sql === 1) {
+                            if (i >= 8) bar.classList.add('active-danger');
+                            else bar.classList.add('active-normal');
+                        } else { bar.classList.add('active-gray'); }
+                    }
+                }
+            }
+
+            if (typeof window.updateCompactSMeter === 'function') {
+                window.updateCompactSMeter(dbm, sql);
+            }
+        }
+
+        function updateVfoStatusIndicators() {
+            let ctcss = document.getElementById('tx-ctcss') ? parseFloat(document.getElementById('tx-ctcss').value) : 0;
+            let dcs = document.getElementById('tx-dcs') ? parseInt(document.getElementById('tx-dcs').value) : 0;
+            let shiftDir = document.getElementById('tx-off-dir') ? document.getElementById('tx-off-dir').value : "0";
+            let shiftVal = document.getElementById('tx-off-val') ? parseFloat(document.getElementById('tx-off-val').value) : 0.0;
+
+            let statusParts = [];
+            if (ctcss > 0) statusParts.push(`CT: ${ctcss}`); else if (dcs > 0) statusParts.push(`DCS: ${dcs}`); else statusParts.push(`T: OFF`);
+            if (shiftDir === "1") statusParts.push(`S: +${shiftVal.toFixed(2)}`); else if (shiftDir === "2") statusParts.push(`S: -${shiftVal.toFixed(2)}`); else statusParts.push(`S: OFF`);
+
+            const statusEl = document.getElementById('vfo-status-info');
+            if (statusEl) statusEl.innerText = statusParts.join(' | ');
+        }
+
+        function renderVFO() {
+            const wrapper = document.getElementById('vfo-digits-wrapper');
+            wrapper.innerHTML = '';
+            
+            let freqKHz = Math.floor(currentFreq / 1000);
+            let freqStr = freqKHz.toString().padStart(6, '0');
+            if (freqStr.length > 6) freqStr = freqStr.substring(0, 6); 
+            const steps = [100000000, 10000000, 1000000, 100000, 10000, 1000];
+
+            for (let i = 0; i < freqStr.length; i++) {
+                if (i === 3) { let dot = document.createElement('span'); dot.className = 'vfo-dot'; dot.innerText = '.'; wrapper.appendChild(dot); }
+                let span = document.createElement('span');
+                span.className = 'vfo-digit'; span.innerText = freqStr[i]; span.dataset.step = steps[i];
+                
+                span.addEventListener('wheel', (e) => { e.preventDefault(); let step = parseInt(span.dataset.step); if (e.deltaY < 0) changeFrequency(step); else if (e.deltaY > 0) changeFrequency(-step); });
+                let touchStartY = 0;
+                span.addEventListener('touchstart', (e) => { touchStartY = e.touches[0].clientY; e.preventDefault(); }, {passive: false});
+                span.addEventListener('touchmove', (e) => { e.preventDefault(); let touchCurrentY = e.touches[0].clientY; let diff = touchStartY - touchCurrentY; 
+                    if (Math.abs(diff) > 15) { let step = parseInt(span.dataset.step); if (diff > 0) changeFrequency(step); else changeFrequency(-step); touchStartY = touchCurrentY; }
+                }, {passive: false});
+                wrapper.appendChild(span);
+            }
+        }
+
+        function changeFrequency(delta) {
+            currentFreq += delta;
+            if (currentFreq < 110000000) currentFreq = 110000000;
+            if (currentFreq > 480000000) currentFreq = 480000000;
+            setChannelName(""); renderVFO(); debounceHashUpdate();
+        }
+
+        function debounceHashUpdate() {
+            clearTimeout(hashUpdateTimeout);
+            hashUpdateTimeout = setTimeout(() => {
+                let ctcss = document.getElementById('tx-ctcss') ? document.getElementById('tx-ctcss').value : "0";
+                let shiftDir = document.getElementById('tx-off-dir') ? document.getElementById('tx-off-dir').value : "0";
+                let shiftVal = document.getElementById('tx-off-val') ? document.getElementById('tx-off-val').value : "0";
+                let shiftReal = 0; if(shiftDir == "1") shiftReal = shiftVal; if(shiftDir == "2") shiftReal = "-" + shiftVal;
+                window.location.hash = `#freq=${currentFreq}&mod=${currentMod}&name=VFO;${ctcss};${shiftReal}`;
+                if (typeof window.applyProfileSettings === 'function') window.applyProfileSettings();
+            }, 300);
+        }
+
+        const vfoContainer = document.getElementById('vfo-display');
+        const vfoWrapper = document.getElementById('vfo-digits-wrapper');
+        const manualInput = document.getElementById('manual-freq-input');
+        const vfoUnit = document.getElementById('vfo-unit');
+
+        vfoContainer.addEventListener('dblclick', () => { vfoWrapper.style.display = 'none'; vfoUnit.style.display = 'none'; manualInput.style.display = 'block'; manualInput.value = (currentFreq / 1000000).toFixed(3); manualInput.focus(); });
+        manualInput.addEventListener('blur', () => { let val = parseFloat(manualInput.value); if (!isNaN(val) && val >= 110.000 && val <= 480.000) { currentFreq = Math.round(val * 1000000); setChannelName(""); debounceHashUpdate(); } manualInput.style.display = 'none'; vfoWrapper.style.display = 'flex'; vfoUnit.style.display = 'inline'; renderVFO(); });
+        manualInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') manualInput.blur(); });
+
+// --- BROWSER SCANNER ENGINE (EVENT-DRIVEN WITH SCAN AND SCAN ALL SUPPORT) ---
+        let scanActive = false;
+        let scanState = "STOPPED"; // Possible states: STOPPED, SCANNING, PAUSED
+        let scanScope = "tab";     // "tab" (active tab only) or "all" (all tabs)
+        let scanList = [];
+        let currentScanIndex = 0;
+        let scanResumeDelaySeconds = 2.0;
+        let scanConfig = { action: 'pause', ticks: 25, delay: 2.0 }; 
+        let originalProfile = null;
+        let currentScannedElemKey = null; 
+        let scanTimeout = null;
+        let scanResumeTimeout = null; 
+
+        function getSavedScanDelay() {
+            let val = (typeof getCookie === 'function' ? getCookie('quansheng_scan_delay') : null);
+            if (val === null || val === "") {
+                try { val = localStorage.getItem('quansheng_scan_delay'); } catch(e) {}
+            }
+            let parsed = parseFloat(val);
+            if (isNaN(parsed) || parsed < 0) {
+                return 2.0;
+            }
+            return parsed;
+        }
+
+        let scanDelayDebounce = null;
+        window.updateScanResumeDelay = function(newVal) {
+            let delayEl = document.getElementById('scan-resume-delay');
+            let val = newVal !== undefined ? parseFloat(newVal) : (delayEl ? parseFloat(delayEl.value) : 2.0);
+            if (isNaN(val) || val < 0) val = 0;
+            if (val > 30.0) val = 30.0;
+
+            scanResumeDelaySeconds = val;
+            scanConfig.delay = val;
+
+            let valEl = document.getElementById('scan-delay-val');
+            if (valEl) valEl.innerText = `${val.toFixed(1)} s`;
+            if (delayEl && Math.abs(parseFloat(delayEl.value) - val) > 0.05) {
+                delayEl.value = val;
+            }
+
+            try {
+                if (typeof setCookie === 'function') setCookie('quansheng_scan_delay', val.toFixed(1), 365);
+                localStorage.setItem('quansheng_scan_delay', val.toFixed(1));
+            } catch(e) {}
+
+            clearTimeout(scanDelayDebounce);
+            scanDelayDebounce = setTimeout(() => {
+                if (uiSocket && uiSocket.readyState === WebSocket.OPEN) {
+                    uiSocket.send(JSON.stringify({ cmd: "set_scan_resume_delay", delay: val }));
+                    uiSocket.send(JSON.stringify({ cmd: "save_scan_config", config: scanConfig }));
+                }
+            }, 200);
+        };
+
+        window.updateAudioMute = function() {
+            let tx = typeof isTransmitting !== 'undefined' ? isTransmitting : false;
+            let scanningFly = (typeof scanActive !== 'undefined' && scanActive && typeof scanState !== 'undefined' && scanState === "SCANNING");
+            let isMuted = tx || scanningFly;
+            
+            // Updates Web Audio GainNode
+            if (typeof window.setRxMuted === 'function') {
+                window.setRxMuted(isMuted);
+            }
+
+            // remoteAudioEl must remain strictly MUTED whenever Web Audio pipeline (rxSourceNode) is active
+            // to eliminate duplicate audio / echo!
+            let hasWebAudio = (typeof rxSourceNode !== 'undefined' && rxSourceNode) || (typeof window.rxSourceNode !== 'undefined' && window.rxSourceNode);
+            if (typeof remoteAudioEl !== 'undefined' && remoteAudioEl) {
+                if (!hasWebAudio) {
+                    remoteAudioEl.muted = isMuted;
+                    if (!remoteAudioEl.muted && remoteAudioEl.paused) {
+                        remoteAudioEl.play().catch(()=>{});
+                    }
+                } else {
+                    remoteAudioEl.muted = true; // Always muted when rxGainNode handles sound output!
+                    if (remoteAudioEl.paused) {
+                        remoteAudioEl.play().catch(()=>{});
+                    }
+                }
+            }
+        };
+
+        function clearScanHighlights() {
+            document.querySelectorAll('.preset-item.currently-scanned').forEach(el => {
+                el.classList.remove('currently-scanned');
+            });
+            currentScannedElemKey = null;
+        }
+
+        window.toggleScanConfig = function() {
+            let p = document.getElementById('scan-config-panel');
+            p.style.display = (p.style.display === 'none' || p.style.display === '') ? 'flex' : 'none';
+        };
+
+        let scanConfigDebounce = null;
+        window.updateScanConfig = function(newTicks) {
+            let speedEl = document.getElementById('scan-speed');
+            if (newTicks !== undefined && speedEl) {
+                speedEl.value = newTicks;
+            }
+            let ticksVal = parseInt(speedEl.value);
+            if (isNaN(ticksVal) || ticksVal < 5) ticksVal = 5;
+            scanConfig.ticks = ticksVal;
+            document.getElementById('scan-speed-val').innerText = `${ticksVal} (${ticksVal * 10} ms)`;
+            scanConfig.action = document.getElementById('scan-action').value;
+            scanConfig.delay = scanResumeDelaySeconds;
+            
+            let delayContainer = document.getElementById('scan-delay-container');
+            if (delayContainer) {
+                delayContainer.style.display = (scanConfig.action === 'pause') ? 'block' : 'none';
+            }
+
+            try {
+                localStorage.setItem('quansheng_scan_ticks', ticksVal);
+                if (typeof setCookie === 'function') setCookie('quansheng_scan_ticks', ticksVal, 365);
+            } catch(e) {}
+
+            clearTimeout(scanConfigDebounce);
+            scanConfigDebounce = setTimeout(() => {
+                if (uiSocket && uiSocket.readyState === WebSocket.OPEN) {
+                    uiSocket.send(JSON.stringify({ cmd: "save_scan_config", config: scanConfig }));
+                }
+            }, 150);
+        };
+
+        function updateScanButtonsUI() {
+            let btnScanTab = document.getElementById('btn-scan-tab');
+            let btnScanAll = document.getElementById('btn-scan-all');
+
+            if (btnScanTab) {
+                if (scanActive && scanScope === "tab") {
+                    btnScanTab.classList.add('active-tab-scan');
+                    btnScanTab.innerHTML = '<span>STOP</span>';
+                    btnScanTab.title = 'Stop tab scanning';
+                } else {
+                    btnScanTab.classList.remove('active-tab-scan');
+                    btnScanTab.innerHTML = '<span>SCAN</span>';
+                    btnScanTab.title = 'Scan channels in active tab';
+                }
+            }
+
+            if (btnScanAll) {
+                if (scanActive && scanScope === "all") {
+                    btnScanAll.classList.add('active-all-scan');
+                    btnScanAll.innerHTML = '<span>STOP ALL</span>';
+                    btnScanAll.title = 'Stop all tabs scanning';
+                } else {
+                    btnScanAll.classList.remove('active-all-scan');
+                    btnScanAll.innerHTML = '<span>SCAN ALL</span>';
+                    btnScanAll.title = 'Scan all selected channels across all tabs';
+                }
+            }
+        }
+
+        window.toggleScanTab = function() {
+            if (scanActive && scanScope === "tab") {
+                window.stopScan();
+            } else {
+                window.startScan("tab");
+            }
+        };
+
+        window.toggleScanAll = function() {
+            if (scanActive && scanScope === "all") {
+                window.stopScan();
+            } else {
+                window.startScan("all");
+            }
+        };
+
+        window.toggleScan = function(arg) {
+            if (typeof arg === "string") {
+                if (arg === "all") window.toggleScanAll();
+                else window.toggleScanTab();
+            } else if (typeof arg === "boolean") {
+                if (arg) window.startScan("tab");
+                else window.stopScan();
+            } else {
+                window.toggleScanTab();
+            }
+        };
+
+        window.startScan = function(scope) {
+            if (scanActive) {
+                window.stopScan(false, true);
+            }
+
+            scanScope = scope || "tab";
+            let curTab = tabs[activeTabIdx];
+
+            if (scanScope === "tab") {
+                presets = getActivePresets();
+                scanList = presets.map((p, i) => ({
+                    ...p,
+                    tabIndex: activeTabIdx,
+                    tabName: curTab ? curTab.name : "Main",
+                    originalIndex: i
+                })).filter(p => p.scan === true && p.freq > 0);
+
+                if (scanList.length === 0) {
+                    alert(`No channels selected for scanning in tab "${curTab ? curTab.name : 'active'}"!\nSelect the checkbox for desired channels.`);
+                    return;
+                }
+            } else {
+                // SCAN ALL: collect all selected channels from all scanlists/tabs
+                scanList = [];
+                tabs.forEach((tab, tIdx) => {
+                    if (tab.presets) {
+                        tab.presets.forEach((p, pIdx) => {
+                            if (p.scan === true && p.freq > 0) {
+                                scanList.push({
+                                    ...p,
+                                    tabIndex: tIdx,
+                                    tabName: tab.name,
+                                    originalIndex: pIdx
+                                });
+                            }
+                        });
+                    }
+                });
+
+                if (scanList.length === 0) {
+                    alert("No channels selected for scanning in any tab!\nSelect the checkbox for desired channels.");
+                    return;
+                }
+            }
+
+            let currentVfoName = document.getElementById('vfo-channel-name').innerText;
+            originalProfile = {
+                freq: currentFreq,
+                mod: currentMod,
+                name: currentVfoName.replace("SCAN: ", "")
+            };
+
+            scanActive = true;
+            scanState = "SCANNING";
+            currentScannedElemKey = null;
+
+            updateScanButtonsUI();
+            window.updateAudioMute();
+
+            let listEl = document.getElementById('preset-list');
+            if (listEl) listEl.classList.add('scanning-mode');
+
+            if (scanScope === "all") {
+                renderScanAllView();
+            } else {
+                renderPresets();
+            }
+
+            let freqs = scanList.map(p => p.freq);
+            if (uiSocket && uiSocket.readyState === WebSocket.OPEN) {
+                uiSocket.send(JSON.stringify({
+                    cmd: "start_scan",
+                    scope: scanScope,
+                    tab: scanScope === "tab" ? activeTabIdx : -1,
+                    scanlist: freqs,
+                    ticks: scanConfig.ticks,
+                    delay: scanResumeDelaySeconds
+                }));
+            }
+        };
+
+        window.stopScan = function(keepChannel, isSwitchingMode) {
+            scanActive = false;
+            scanState = "STOPPED";
+            clearTimeout(scanResumeTimeout);
+            scanResumeTimeout = null;
+            clearTimeout(scanTimeout);
+            scanTimeout = null;
+
+            updateScanButtonsUI();
+            clearScanHighlights();
+
+            window.updateAudioMute();
+
+            let listEl = document.getElementById('preset-list');
+            if (listEl) {
+                listEl.classList.remove('scanning-mode');
+                listEl.classList.remove('scan-all-mode');
+            }
+
+            if (uiSocket && uiSocket.readyState === WebSocket.OPEN && !isSwitchingMode) {
+                uiSocket.send(JSON.stringify({ cmd: "stop_scan" }));
+            }
+
+            if (!isSwitchingMode) {
+                renderTabs();
+                renderPresets();
+            }
+
+            if (!keepChannel && !isSwitchingMode && originalProfile && uiSocket && uiSocket.readyState === WebSocket.OPEN) {
+                currentFreq = originalProfile.freq;
+                currentMod = originalProfile.mod;
+                setChannelName(originalProfile.name);
+
+                let modToggle = document.getElementById('vfo-mod-toggle');
+                if (modToggle) modToggle.innerText = currentMod;
+                renderVFO();
+
+                window.location.hash = `#freq=${currentFreq}&mod=${currentMod}&name=${encodeURIComponent(originalProfile.name)}`;
+                if (typeof window.applyProfileSettings === 'function') window.applyProfileSettings();
+                if (typeof window.syncRadioProfile === 'function') window.syncRadioProfile();
+            }
+        };
+
+        // Clicking a channel during scan stops the scanner and tunes VFO to that channel
+        window.selectChannelAndStopScan = function(tabIdx, presetIdx) {
+            if (tabIdx < 0 || tabIdx >= tabs.length) tabIdx = 0;
+            let targetTab = tabs[tabIdx];
+            if (!targetTab || !targetTab.presets || !targetTab.presets[presetIdx]) return;
+            let preset = targetTab.presets[presetIdx];
+
+            // Stop scan, keeping this channel
+            window.stopScan(true);
+
+            activeTabIdx = tabIdx;
+            try { localStorage.setItem('quansheng_active_tab', activeTabIdx); } catch(e) {}
+
+            currentFreq = preset.freq;
+            currentMod = preset.mod ? preset.mod.toUpperCase() : "FM";
+            setChannelName(preset.name);
+
+            let modToggle = document.getElementById('vfo-mod-toggle');
+            if (modToggle) modToggle.innerText = currentMod;
+            renderVFO();
+
+            renderTabs();
+            renderPresets();
+
+            let shiftReal = 0;
+            if (preset.shift_dir === 1) shiftReal = preset.shift_val;
+            if (preset.shift_dir === 2) shiftReal = "-" + preset.shift_val;
+
+            window.location.hash = `#freq=${preset.freq}&mod=${currentMod}&name=${encodeURIComponent(preset.name)};${preset.ctcss || 0};${shiftReal}`;
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+
+            if (uiSocket && uiSocket.readyState === WebSocket.OPEN) {
+                uiSocket.send(JSON.stringify({
+                    cmd: "apply_profile",
+                    freq: preset.freq,
+                    mod: currentMod,
+                    pwr: preset.pwr || 7,
+                    ctcss: preset.ctcss || 0,
+                    dcs: preset.dcs || 0,
+                    shift_dir: preset.shift_dir || 0,
+                    shift_val: preset.shift_val || 0.0
+                }));
+            }
+
+            if (typeof window.updateAudioMute === 'function') {
+                window.updateAudioMute();
+            }
+
+            setTimeout(() => {
+                if (typeof window.applyProfileSettings === 'function') window.applyProfileSettings();
+                if (typeof window.syncRadioProfile === 'function') window.syncRadioProfile();
+            }, 100);
+        };
+
+        // SCAN ALL view: shows channels from all scanlists/tabs participating in scan
+        function renderScanAllView() {
+            const list = document.getElementById('preset-list');
+            if (!list) return;
+            list.innerHTML = '';
+            list.classList.add('scanning-mode');
+            list.classList.add('scan-all-mode');
+
+            tabs.forEach((tab, tIdx) => {
+                let tabPresets = tab.presets || [];
+                let hasScanned = tabPresets.some(p => p.scan === true && p.freq > 0);
+                if (!hasScanned) return;
+
+                let scannedCount = tabPresets.filter(p => p.scan === true && p.freq > 0).length;
+
+                let groupHeader = document.createElement('div');
+                groupHeader.className = 'scan-group-header';
+                groupHeader.innerHTML = `
+                    <span class="scan-group-title">
+                        <span>📁</span>
+                        <span>${tab.name}</span>
+                    </span>
+                    <span class="scan-group-badge">${scannedCount} in scan</span>
+                `;
+                list.appendChild(groupHeader);
+
+                // Scanned channels first, then remaining from this scanlist
+                let sortedList = tabPresets.map((p, pIdx) => ({ ...p, origIdx: pIdx }))
+                    .sort((a, b) => (b.scan ? 1 : 0) - (a.scan ? 1 : 0));
+
+                sortedList.forEach(preset => {
+                    let elemKey = `t${tIdx}-p${preset.origIdx}`;
+                    let div = document.createElement('div');
+                    div.id = `preset-item-${elemKey}`;
+                    div.className = `preset-item ${preset.scan ? 'scan-enabled' : 'not-scanned'} scan-all-item`;
+                    div.setAttribute('data-tab', tIdx);
+                    div.setAttribute('data-preset', preset.origIdx);
+                    div.setAttribute('data-freq', preset.freq);
+                    div.setAttribute('data-key', elemKey);
+                    div.onclick = () => window.selectChannelAndStopScan(tIdx, preset.origIdx);
+
+                    let shiftTxt = "Simplex";
+                    if (preset.shift_dir === 1) shiftTxt = `+${preset.shift_val}`;
+                    else if (preset.shift_dir === 2) shiftTxt = `-${preset.shift_val}`;
+                    let modTxt = preset.mod ? preset.mod.toUpperCase() : "FM";
+                    let freqFormatted = (preset.freq / 1000000).toFixed(4) + " MHz | " + modTxt;
+
+                    div.innerHTML = `
+                        <div class="preset-bg-meter" id="preset-bg-${elemKey}" data-meter-key="${elemKey}"></div>
+                        <div class="preset-content">
+                            <div class="preset-scan-check" style="width: 10%; color: ${preset.scan ? 'var(--accent)' : '#666'}; font-weight: bold; font-size: 13px;">
+                                ${preset.scan ? '✓' : '•'}
+                            </div>
+                            <div class="preset-info" style="width: 90%; cursor: pointer;">
+                                <span class="preset-name">${preset.name}</span>
+                                <span class="preset-meta">
+                                    <span>${freqFormatted}</span>
+                                    <span id="preset-dbm-${elemKey}" data-dbm-key="${elemKey}" style="font-weight:bold; font-family: monospace;"></span>
+                                </span>
+                                <span class="preset-meta" style="font-size: 10px;">CT: ${preset.ctcss || 'OFF'} | S: ${shiftTxt}</span>
+                            </div>
+                        </div>
+                    `;
+                    list.appendChild(div);
+                });
+            });
+        }
+
+        let presetMeterTimeouts = {};
+
+        // S-Meter on tile with background and dBm value fading after 5 seconds of inactivity
+        function updatePresetMeter(key, dbm, sql) {
+            let bg = document.getElementById(`preset-bg-${key}`) || document.querySelector(`[data-meter-key="${key}"]`);
+            let dbmText = document.getElementById(`preset-dbm-${key}`) || document.querySelector(`[data-dbm-key="${key}"]`);
+            
+            if (!bg && typeof key === 'string' && key.includes('-p')) {
+                let pIdx = key.split('-p')[1];
+                bg = document.getElementById(`preset-bg-${pIdx}`);
+                dbmText = document.getElementById(`preset-dbm-${pIdx}`);
+            }
+
+            if (!bg) return;
+            
+            let percent = Math.max(0, Math.min(100, ((dbm + 127) / 77) * 100));
+            bg.style.width = percent + '%';
+            
+            if (dbmText) {
+                dbmText.innerText = `[${dbm} dBm]`;
+                dbmText.style.color = sql === 1 ? '#fff' : '#aaa';
+            }
+
+            if (sql === 1) {
+                bg.style.background = 'linear-gradient(90deg, rgba(76, 175, 80, 0.8), rgba(244, 67, 54, 0.8))';
+            } else {
+                bg.style.background = 'rgba(102, 102, 102, 0.4)';
+            }
+
+            if (presetMeterTimeouts[key]) {
+                clearTimeout(presetMeterTimeouts[key]);
+            }
+
+            presetMeterTimeouts[key] = setTimeout(() => {
+                let b = document.getElementById(`preset-bg-${key}`) || document.querySelector(`[data-meter-key="${key}"]`);
+                let dt = document.getElementById(`preset-dbm-${key}`) || document.querySelector(`[data-dbm-key="${key}"]`);
+                if (!b && typeof key === 'string' && key.includes('-p')) {
+                    let pIdx = key.split('-p')[1];
+                    b = document.getElementById(`preset-bg-${pIdx}`);
+                    dt = document.getElementById(`preset-dbm-${pIdx}`);
+                }
+                if (b) b.style.width = '0%';
+                if (dt) dt.innerText = '';
+                delete presetMeterTimeouts[key];
+            }, 5000);
+        }
+
+        let sysCpu = "--";
+        let sysTemp = "--";
+        let sysPing = "--";
+        let sysPingMs = null;
+        let pingInterval = null;
+
+        function updateSysStatsDisplay() {
+            const sysStatsText = document.getElementById('sys-stats-text');
+            if (!sysStatsText) return;
+            let pingColor = "#888";
+            if (sysPingMs !== null) {
+                if (sysPingMs < 60) pingColor = "#4CAF50";
+                else if (sysPingMs < 150) pingColor = "#ff9800";
+                else pingColor = "#f44336";
+            }
+            sysStatsText.innerHTML = `CPU: ${sysCpu}% | Temp: ${sysTemp}°C | Ping: <span style="color:${pingColor}; font-weight:bold;">${sysPing}</span>`;
+        }
+
+        function initWebSocket() {
+            const wsProto = window.location.protocol === "https:" ? "wss://" : "ws://";
+            const wsUrl = wsProto + window.location.host + "/tx-ws/";
+            uiSocket = new WebSocket(wsUrl);
+            const statusSpan = document.getElementById('ws-status');
+
+            uiSocket.onopen = () => {
+                statusSpan.innerText = "Connected"; statusSpan.style.color = "#4CAF50";
+                if (pingInterval) clearInterval(pingInterval);
+                pingInterval = setInterval(() => {
+                    if (uiSocket && uiSocket.readyState === WebSocket.OPEN) {
+                        uiSocket.send(JSON.stringify({ cmd: "ping", t: Date.now() }));
+                    }
+                }, 1500);
+                uiSocket.send(JSON.stringify({ cmd: "ping", t: Date.now() }));
+
+                if (currentFreq > 0) {
+                    uiSocket.send(JSON.stringify({
+                        cmd: "apply_profile",
+                        freq: currentFreq,
+                        mod: currentMod || "FM",
+                        pwr: 7,
+                        ctcss: 0,
+                        dcs: 0,
+                        shift_dir: 0,
+                        shift_val: 0.0
+                    }));
+                }
+
+                if (logModalOpen) {
+                    uiSocket.send(JSON.stringify({ cmd: "get_logs" }));
+                }
+            };
+
+            uiSocket.onmessage = (event) => {
+                if (typeof event.data === "string") {
+                    try {
+                        let msg = JSON.parse(event.data);
+                        
+                        if (msg.cmd === "sync_db" && msg.db) {
+                            if (msg.owrx && msg.owrx.enabled) {
+                                let owrxBtn = document.getElementById('btn-owrx');
+                                if (owrxBtn) {
+                                    let port = msg.owrx.port || 8074;
+                                    owrxBtn.href = `${window.location.protocol}//${window.location.hostname}:${port}/`;
+                                    owrxBtn.style.display = 'inline-flex';
+                                }
+                            } else {
+                                let owrxBtn = document.getElementById('btn-owrx');
+                                if (owrxBtn) owrxBtn.style.display = 'none';
+                            }
+                            if (msg.callsign) {
+                                currentCallsign = msg.callsign;
+                                let csEl = document.getElementById('header-callsign');
+                                if (csEl) csEl.innerText = currentCallsign;
+                            }
+                            if (msg.db.tabs && msg.db.tabs.length > 0) {
+                                tabs = msg.db.tabs;
+                            } else if (msg.db.presets) {
+                                tabs = [{ name: "Main", presets: msg.db.presets }];
+                            }
+                            try {
+                                let savedIdx = parseInt(localStorage.getItem('quansheng_active_tab'));
+                                if (!isNaN(savedIdx) && savedIdx >= 0 && savedIdx < tabs.length) {
+                                    activeTabIdx = savedIdx;
+                                }
+                            } catch(e) {}
+                            if (activeTabIdx >= tabs.length) {
+                                activeTabIdx = Math.max(0, tabs.length - 1);
+                            }
+                            if (!scanActive) {
+                                presets = getActivePresets();
+                                scanList = presets.map((p, i) => ({...p, tabIndex: activeTabIdx, originalIndex: i})).filter(p => p.scan === true);
+                                renderTabs();
+                                renderPresets();
+                            }
+
+                            if (msg.db.history) { renderHistory(msg.db.history); }
+                            
+                            if (msg.db.scan_config) {
+                                scanConfig = msg.db.scan_config;
+                                let speedEl = document.getElementById('scan-speed');
+                                let actionEl = document.getElementById('scan-action');
+                                let valEl = document.getElementById('scan-speed-val');
+                                
+                                if (speedEl && valEl && document.activeElement !== speedEl) {
+                                    speedEl.value = scanConfig.ticks;
+                                    valEl.innerText = `${scanConfig.ticks} (${scanConfig.ticks * 10} ms)`;
+                                }
+                                if (actionEl && document.activeElement !== actionEl) {
+                                    actionEl.value = scanConfig.action;
+                                }
+
+                                let cookieDelay = getSavedScanDelay();
+                                if (scanConfig.delay && scanConfig.delay > 0 && !getCookie('quansheng_scan_delay') && !localStorage.getItem('quansheng_scan_delay')) {
+                                    scanResumeDelaySeconds = scanConfig.delay;
+                                } else {
+                                    scanResumeDelaySeconds = cookieDelay;
+                                    scanConfig.delay = cookieDelay;
+                                }
+                                let delayEl = document.getElementById('scan-resume-delay');
+                                let delayValEl = document.getElementById('scan-delay-val');
+                                if (delayEl && document.activeElement !== delayEl) {
+                                    delayEl.value = scanResumeDelaySeconds;
+                                }
+                                if (delayValEl) {
+                                    delayValEl.innerText = `${scanResumeDelaySeconds.toFixed(1)} s`;
+                                }
+                                let delayContainer = document.getElementById('scan-delay-container');
+                                if (delayContainer) {
+                                    delayContainer.style.display = (scanConfig.action === 'pause') ? 'block' : 'none';
+                                }
+
+                                try {
+                                    localStorage.setItem('quansheng_scan_ticks', scanConfig.ticks);
+                                    if (typeof setCookie === 'function') setCookie('quansheng_scan_ticks', scanConfig.ticks, 365);
+                                } catch(e) {}
+                            }
+
+                            if (msg.mqtt && typeof window.updateMqttUI === 'function') {
+                                window.updateMqttUI(msg.mqtt);
+                            }
+                        } else if (msg.cmd === "mqtt_config" || msg.cmd === "mqtt_config_saved") {
+                            if (msg.config && typeof window.updateMqttUI === 'function') {
+                                window.updateMqttUI(msg.config);
+                            }
+                        } else if (msg.cmd === "dtmf_received") {
+                            const statusInfo = document.getElementById('vfo-status-info');
+                            if (statusInfo) {
+                                const origText = statusInfo.innerText;
+                                statusInfo.innerText = `DTMF: ${msg.code} (${msg.dbm} dBm)`;
+                                statusInfo.style.color = "#ffeb3b";
+                                setTimeout(() => {
+                                    statusInfo.innerText = origText;
+                                    statusInfo.style.color = "";
+                                }, 3500);
+                            }
+                        } else if (msg.cmd === "scan_status") {
+                            scanActive = msg.active;
+                            if (msg.active) {
+                                scanState = msg.paused ? "PAUSED" : "SCANNING";
+                            } else {
+                                scanState = "STOPPED";
+                                clearScanHighlights();
+                            }
+                            updateScanButtonsUI();
+                            let listEl = document.getElementById('preset-list');
+                            if (listEl) {
+                                if (msg.active) listEl.classList.add('scanning-mode');
+                                else {
+                                    listEl.classList.remove('scanning-mode');
+                                    listEl.classList.remove('scan-all-mode');
+                                }
+                            }
+                            window.updateAudioMute();
+                        } else if (msg.cmd === "scan_resumed") {
+                            if (scanActive) {
+                                scanState = "SCANNING";
+                                window.updateAudioMute();
+                            }
+                        } else if (msg.cmd === "sys_stat") {
+                            sysCpu = msg.cpu;
+                            sysTemp = msg.temp;
+                            updateSysStatsDisplay();
+                        } else if (msg.cmd === "pong") {
+                            let now = Date.now();
+                            if (typeof msg.t === 'number') {
+                                sysPingMs = Math.max(0, now - msg.t);
+                                sysPing = sysPingMs + " ms";
+                            }
+                            updateSysStatsDisplay();
+                        } else if (msg.cmd === "log_history") {
+                            let c = document.getElementById('log-console-container');
+                            if (c) c.innerHTML = "";
+                            logLineCount = 0;
+                            if (msg.lines && msg.lines.length > 0) {
+                                appendLogLines(msg.lines);
+                            } else {
+                                if (c) c.innerHTML = '<div style="color:#888;">RAM log buffer is empty.</div>';
+                            }
+                        } else if (msg.cmd === "log_entry") {
+                            let m = document.getElementById('log-modal');
+                            if (m && m.style.display !== 'none' && msg.line) {
+                                appendLogLines([msg.line]);
+                            }
+                        } else if (msg.cmd === "s_meter") {
+                            updateSMeter(msg.dbm, msg.sql);
+                            
+                            // If stopped on carrier, S-Meter monitors carrier loss and resumes scan
+                            if (scanActive && scanState === "PAUSED" && currentScannedElemKey) {
+                                updatePresetMeter(currentScannedElemKey, msg.dbm, msg.sql);
+                                
+                                if (msg.sql === 1) {
+                                    clearTimeout(scanResumeTimeout);
+                                    scanResumeTimeout = null;
+                                } else if (msg.sql === 0 && !scanResumeTimeout) {
+                                    let resumeMs = Math.round(scanResumeDelaySeconds * 1000);
+                                    if (isNaN(resumeMs) || resumeMs < 200) resumeMs = 2000;
+                                    scanResumeTimeout = setTimeout(() => {
+                                        scanState = "SCANNING";
+                                        window.updateAudioMute();
+                                        uiSocket.send(JSON.stringify({cmd: "resume_scan"}));
+                                    }, resumeMs);
+                                }
+                            }
+                        } else if (msg.cmd === "scan_result") {
+                            // Find matching channels in scanList (supports active tab SCAN and SCAN ALL)
+                            let matched = scanList.filter(p => p.freq === msg.freq);
+                            if (matched.length === 0) {
+                                presets = getActivePresets();
+                                let idx = presets.findIndex(p => p.freq === msg.freq);
+                                if (idx !== -1) {
+                                    matched = [{ ...presets[idx], tabIndex: activeTabIdx, originalIndex: idx }];
+                                }
+                            }
+
+                            if (matched.length > 0) {
+                                let firstItem = matched[0];
+                                let elemKey = `t${firstItem.tabIndex}-p${firstItem.originalIndex}`;
+
+                                clearScanHighlights();
+                                currentScannedElemKey = elemKey;
+
+                                let currItem = document.getElementById(`preset-item-${elemKey}`) ||
+                                               document.getElementById(`preset-item-${firstItem.originalIndex}`) ||
+                                               document.querySelector(`[data-key="${elemKey}"]`);
+                                if (currItem) currItem.classList.add('currently-scanned');
+
+                                currentFreq = firstItem.freq;
+                                currentMod = firstItem.mod ? firstItem.mod.toUpperCase() : "FM";
+                                setChannelName("SCAN: " + firstItem.name);
+
+                                let modToggle = document.getElementById('vfo-mod-toggle');
+                                if (modToggle) modToggle.innerText = currentMod;
+                                renderVFO();
+
+                                // Update S-Meter for all tiles with this frequency
+                                matched.forEach(m => {
+                                    let k = `t${m.tabIndex}-p${m.originalIndex}`;
+                                    updatePresetMeter(k, msg.dbm, msg.sql);
+                                    updatePresetMeter(m.originalIndex, msg.dbm, msg.sql);
+                                });
+                                updateSMeter(msg.dbm, msg.sql);
+
+                                if (msg.sql === 1) {
+                                    if (scanConfig.action === 'stop') {
+                                        window.selectChannelAndStopScan(firstItem.tabIndex, firstItem.originalIndex);
+                                        return;
+                                    } else if (scanConfig.action === 'pause') {
+                                        scanState = "PAUSED";
+                                        window.updateAudioMute();
+                                        setChannelName(firstItem.name);
+
+                                        uiSocket.send(JSON.stringify({
+                                            cmd: "apply_profile",
+                                            freq: firstItem.freq,
+                                            mod: firstItem.mod || "FM",
+                                            pwr: firstItem.pwr || 7,
+                                            ctcss: firstItem.ctcss || 0,
+                                            dcs: firstItem.dcs || 0,
+                                            shift_dir: firstItem.shift_dir || 0,
+                                            shift_val: firstItem.shift_val || 0.0
+                                        }));
+                                    }
+                                }
+                            }
+                        }
+                    } catch(e) {}
+                }
+            };
+
+            uiSocket.onclose = () => {
+                if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
+                sysPing = "--";
+                sysPingMs = null;
+                statusSpan.innerText = "Disconnected - retrying..."; statusSpan.style.color = "#f44336";
+                document.getElementById('sys-stats-text').innerText = "Reconnecting...";
+                let csEl = document.getElementById('header-callsign');
+                if (csEl) csEl.innerText = "";
+                setTimeout(initWebSocket, 3000);
+            };
+        }
+
+        function renderHistory(historyArray) {
+            const container = document.getElementById('history-tiles'); container.innerHTML = '';
+            if (!historyArray || historyArray.length === 0) return;
+
+            historyArray.forEach(hist => {
+                let btn = document.createElement('div'); btn.className = 'history-tile';
+                let presetMatch = null;
+                let curP = getActivePresets();
+                presetMatch = curP.find(p => p.freq === hist.freq);
+                if (!presetMatch && tabs) {
+                    for (let t of tabs) {
+                        if (t.presets) {
+                            presetMatch = t.presets.find(p => p.freq === hist.freq);
+                            if (presetMatch) break;
+                        }
+                    }
+                }
+                
+                if (presetMatch) { btn.innerText = presetMatch.name; btn.title = (hist.freq / 1000000).toFixed(4) + " MHz"; } 
+                else { btn.innerText = (hist.freq / 1000000).toFixed(4); }
+
+                btn.onclick = () => {
+                    if (typeof window.updateAudioMute === 'function') {
+                        window.updateAudioMute();
+                    }
+
+                    currentFreq = hist.freq; currentMod = hist.mod ? hist.mod.toUpperCase() : "FM";
+                    setChannelName(presetMatch ? presetMatch.name : "");
+                    document.getElementById('vfo-mod-toggle').innerText = currentMod; renderVFO();
+
+                    let shiftReal = 0;
+                    if (hist.shift_dir === 1) shiftReal = hist.shift_val;
+                    if (hist.shift_dir === 2) shiftReal = "-" + hist.shift_val;
+
+                    window.location.hash = `#freq=${hist.freq}&mod=${currentMod}&name=${encodeURIComponent(presetMatch ? presetMatch.name : "VFO")};${hist.ctcss || 0};${shiftReal}`;
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                    
+                    setTimeout(() => {
+                        if (typeof window.applyProfileSettings === 'function') window.applyProfileSettings();
+                        if (typeof window.syncRadioProfile === 'function') window.syncRadioProfile();
+                    }, 100);
+                };
+                container.appendChild(btn);
+            });
+        }
+
+        window.handlePresetClick = function(tabIdx, index, event) {
+            if (event) event.stopPropagation();
+            if (scanActive) {
+                window.selectChannelAndStopScan(tabIdx, index);
+            } else {
+                window.applyPreset(index);
+            }
+        };
+
+        function renderPresets() {
+            const list = document.getElementById('preset-list');
+            list.innerHTML = '';
+
+            presets = getActivePresets();
+
+            if (presets.length === 0) {
+                let curTab = tabs[activeTabIdx];
+                let tabName = curTab ? curTab.name : "Main";
+                list.innerHTML = `<div style="text-align:center; color:#777; padding:25px; line-height: 1.6;">
+                    No saved channels in tab <strong>"${tabName}"</strong>.<br>
+                    <span style="font-size:12px; color:#555;">Set frequency in VFO and click <strong>+</strong> above to add channel.</span>
+                </div>`;
+                return;
+            }
+
+            presets.forEach((preset, index) => {
+                let elemKey = `t${activeTabIdx}-p${index}`;
+                let div = document.createElement('div');
+                div.id = `preset-item-${index}`; 
+                div.className = `preset-item ${preset.scan ? 'scan-enabled' : ''}`;
+                div.style.order = preset.scan ? "0" : "1";
+                div.setAttribute('data-tab', activeTabIdx);
+                div.setAttribute('data-preset', index);
+                div.setAttribute('data-freq', preset.freq);
+                div.setAttribute('data-key', elemKey);
+                div.onclick = (e) => {
+                    if (scanActive) {
+                        window.selectChannelAndStopScan(activeTabIdx, index);
+                    }
+                };
+                
+                let shiftTxt = "Simplex";
+                if (preset.shift_dir === 1) shiftTxt = `+${preset.shift_val}`; else if (preset.shift_dir === 2) shiftTxt = `-${preset.shift_val}`;
+                let modTxt = preset.mod ? preset.mod.toUpperCase() : "FM";
+                let freqFormatted = (preset.freq / 1000000).toFixed(4) + " MHz | " + modTxt;
+
+                div.innerHTML = `
+                    <div class="preset-bg-meter" id="preset-bg-${index}" data-meter-key="${elemKey}"></div>
+                    <div class="preset-content">
+                        <div class="preset-scan-check">
+                            <input type="checkbox" title="Add to scan" ${preset.scan ? 'checked' : ''} onclick="event.stopPropagation()" onchange="togglePresetScan(${index}, this.checked, event)" style="transform: scale(1.4);">
+                        </div>
+                        <div class="preset-info" onclick="handlePresetClick(${activeTabIdx}, ${index}, event)">
+                            <span class="preset-name">${preset.name}</span>
+                            <span class="preset-meta">
+                                <span>${freqFormatted}</span>
+                                <span id="preset-dbm-${index}" data-dbm-key="${elemKey}" style="font-weight:bold; font-family: monospace;"></span>
+                            </span>
+                            <span class="preset-meta" style="font-size: 10px;">CT: ${preset.ctcss || 'OFF'} | S: ${shiftTxt}</span>
+                        </div>
+                        <div class="preset-reorder">
+                            <button class="btn-move" onclick="movePreset(${index}, -1, event)" title="Move Up">▲</button>
+                            <button class="btn-move" onclick="movePreset(${index}, 1, event)" title="Move Down">▼</button>
+                        </div>
+                        <div class="preset-config-wrapper">
+                            <button class="btn-config" onclick="openChannelEditModal(${index}, event)" title="Configure channel">⚙️</button>
+                        </div>
+                        <div class="preset-delete-wrapper">
+                            <button class="btn-delete" onclick="deletePreset(${index}, event)" title="Delete">✖</button>
+                        </div>
+                    </div>
+                `;
+                list.appendChild(div);
+            });
+        }
+
+        window.togglePresetScan = function(index, state, event) {
+            if (event) event.stopPropagation();
+            if (scanActive) {
+                alert("Stop scanning before changing scan list.");
+                renderPresets();
+                return;
+            }
+            presets = getActivePresets();
+            if (!presets[index]) return;
+            presets[index].scan = state;
+            renderPresets();
+            syncTabsToBackend();
+        };
+
+        window.applyPreset = function(index) {
+            if (scanActive) {
+                window.selectChannelAndStopScan(activeTabIdx, index);
+                return;
+            }
+            presets = getActivePresets();
+            let preset = presets[index];
+            if (!preset) return;
+
+            if (typeof window.updateAudioMute === 'function') {
+                window.updateAudioMute();
+            }
+
+            currentFreq = preset.freq; currentMod = preset.mod ? preset.mod.toUpperCase() : "FM";
+            setChannelName(preset.name); document.getElementById('vfo-mod-toggle').innerText = currentMod; renderVFO();
+
+            let shiftReal = 0; if (preset.shift_dir === 1) shiftReal = preset.shift_val; if (preset.shift_dir === 2) shiftReal = "-" + preset.shift_val;
+
+            window.location.hash = `#freq=${preset.freq}&mod=${currentMod}&name=${encodeURIComponent(preset.name)};${preset.ctcss};${shiftReal}`;
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            
+            setTimeout(() => {
+                if (typeof window.applyProfileSettings === 'function') window.applyProfileSettings();
+                if (typeof window.syncRadioProfile === 'function') window.syncRadioProfile();
+            }, 100);
+        };
+
+        window.movePreset = function(index, direction, event) {
+            event.stopPropagation();
+            if (scanActive) return;
+            presets = getActivePresets();
+            let newIndex = index + direction;
+            if (newIndex < 0 || newIndex >= presets.length) return;
+            
+            let temp = presets[index]; presets[index] = presets[newIndex]; presets[newIndex] = temp;
+            renderPresets();
+            syncTabsToBackend();
+        };
+
+        window.saveCurrentSettingsAsPreset = function() {
+            let name = prompt("Enter name for this channel:");
+            if (!name || !name.trim()) return;
+
+            let pwr = document.getElementById('tx-power') ? parseInt(document.getElementById('tx-power').value) : 7;
+            let ctcss = document.getElementById('tx-ctcss') ? parseFloat(document.getElementById('tx-ctcss').value) : 0;
+            let dcs = document.getElementById('tx-dcs') ? parseInt(document.getElementById('tx-dcs').value) : 0;
+            let shiftDir = document.getElementById('tx-off-dir') ? parseInt(document.getElementById('tx-off-dir').value) : 0;
+            let shiftVal = document.getElementById('tx-off-val') ? parseFloat(document.getElementById('tx-off-val').value) : 0.0;
+
+            let newPreset = {
+                name: name.trim(), freq: currentFreq, mod: currentMod, pwr: pwr, ctcss: ctcss, dcs: dcs, shift_dir: shiftDir, shift_val: shiftVal, scan: false
+            };
+            
+            if (!tabs[activeTabIdx]) tabs[activeTabIdx] = { name: "Main", presets: [] };
+            if (!tabs[activeTabIdx].presets) tabs[activeTabIdx].presets = [];
+            tabs[activeTabIdx].presets.push(newPreset);
+            presets = getActivePresets();
+            renderTabs();
+            renderPresets();
+            syncTabsToBackend();
+        };
+
+        window.deletePreset = function(index, event) {
+            event.stopPropagation();
+            if (scanActive) return;
+            presets = getActivePresets();
+            if (!presets[index]) return;
+            if (confirm(`Are you sure you want to delete channel "${presets[index].name}"?`)) {
+                presets.splice(index, 1);
+                renderTabs();
+                renderPresets();
+                syncTabsToBackend();
+            }
+        };
+
+        let editingPresetIndex = -1;
+
+        window.openChannelEditModal = function(index, event) {
+            if (event) event.stopPropagation();
+            if (scanActive) {
+                alert("Stop scanning before editing channel.");
+                return;
+            }
+            presets = getActivePresets();
+            let preset = presets[index];
+            if (!preset) return;
+
+            editingPresetIndex = index;
+
+            document.getElementById('edit-ch-name').value = preset.name || "";
+            document.getElementById('edit-ch-freq').value = (preset.freq / 1000000).toFixed(4);
+            document.getElementById('edit-ch-mod').value = (preset.mod || "FM").toUpperCase();
+            document.getElementById('edit-ch-pwr').value = preset.pwr !== undefined ? String(preset.pwr) : "7";
+            document.getElementById('edit-ch-shift-dir').value = String(preset.shift_dir || 0);
+            document.getElementById('edit-ch-shift-val').value = preset.shift_val !== undefined ? preset.shift_val : "0.0";
+            document.getElementById('edit-ch-ctcss').value = preset.ctcss || "";
+            document.getElementById('edit-ch-dcs').value = preset.dcs || "";
+
+            let modal = document.getElementById('channel-edit-modal');
+            if (modal) {
+                modal.style.display = 'flex';
+                let nameInput = document.getElementById('edit-ch-name');
+                if (nameInput) setTimeout(() => nameInput.focus(), 50);
+            }
+        };
+
+        window.closeChannelEditModal = function() {
+            let modal = document.getElementById('channel-edit-modal');
+            if (modal) modal.style.display = 'none';
+            editingPresetIndex = -1;
+        };
+
+        window.saveChannelEdit = function() {
+            if (editingPresetIndex === -1) return;
+            presets = getActivePresets();
+            let preset = presets[editingPresetIndex];
+            if (!preset) return;
+
+            let name = document.getElementById('edit-ch-name').value.trim();
+            if (!name) {
+                alert("Channel name cannot be empty!");
+                return;
+            }
+
+            let freqMHz = parseFloat(document.getElementById('edit-ch-freq').value);
+            if (isNaN(freqMHz) || freqMHz < 110.0 || freqMHz > 480.0) {
+                alert("Frequency must be between 110.0000 and 480.0000 MHz!");
+                return;
+            }
+
+            let mod = document.getElementById('edit-ch-mod').value;
+            let pwr = parseInt(document.getElementById('edit-ch-pwr').value) || 7;
+            let shiftDir = parseInt(document.getElementById('edit-ch-shift-dir').value) || 0;
+            let shiftVal = parseFloat(document.getElementById('edit-ch-shift-val').value) || 0.0;
+            let ctcss = parseFloat(document.getElementById('edit-ch-ctcss').value) || 0.0;
+            let dcs = parseInt(document.getElementById('edit-ch-dcs').value) || 0;
+
+            preset.name = name;
+            preset.freq = Math.round(freqMHz * 1000000);
+            preset.mod = mod;
+            preset.pwr = pwr;
+            preset.shift_dir = shiftDir;
+            preset.shift_val = shiftVal;
+            preset.ctcss = ctcss;
+            preset.dcs = dcs;
+
+            renderPresets();
+            syncTabsToBackend();
+            closeChannelEditModal();
+        };
+
+        // --- LIVE LOGS MODAL LOGIC (/dev/shm) ---
+        let logModalOpen = false;
+        let logLineCount = 0;
+
+        function escapeHtml(str) {
+            return String(str)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        window.openLogModal = function() {
+            let m = document.getElementById('log-modal');
+            if (!m) return;
+            m.style.display = 'flex';
+            logModalOpen = true;
+            let c = document.getElementById('log-console-container');
+            if (c) c.innerHTML = '<div style="color:#8b949e;">Loading logs from RAM memory...</div>';
+            if (uiSocket && uiSocket.readyState === WebSocket.OPEN) {
+                uiSocket.send(JSON.stringify({ cmd: "get_logs" }));
+            }
+        };
+
+        window.closeLogModal = function() {
+            let m = document.getElementById('log-modal');
+            if (m) m.style.display = 'none';
+            logModalOpen = false;
+            if (uiSocket && uiSocket.readyState === WebSocket.OPEN) {
+                uiSocket.send(JSON.stringify({ cmd: "unsubscribe_logs" }));
+            }
+        };
+
+        window.toggleLogModal = function() {
+            let m = document.getElementById('log-modal');
+            if (!m) return;
+            if (m.style.display === 'none' || !logModalOpen) {
+                openLogModal();
+            } else {
+                closeLogModal();
+            }
+        };
+
+        window.clearLogDisplay = function() {
+            let c = document.getElementById('log-console-container');
+            if (c) c.innerHTML = '';
+            logLineCount = 0;
+            updateLogCounter();
+        };
+
+        function updateLogCounter() {
+            let el = document.getElementById('log-line-counter');
+            if (el) el.innerText = `${logLineCount} lines`;
+        }
+
+        function formatLogLine(line) {
+            let color = "#c9d1d9";
+            let lower = line.toLowerCase();
+            if (lower.includes("[error]") || lower.includes("error:") || lower.includes("failed")) color = "#ff7b72";
+            else if (lower.includes("[warn") || lower.includes("warning:")) color = "#d29922";
+            else if (line.includes("[APRS]")) color = "#58a6ff";
+            else if (line.includes("[DTMF]")) color = "#bc8cff";
+            else if (line.includes("[WebRTC]")) color = "#7ee787";
+            else if (line.includes("[System]") || line.includes("[Logger]")) color = "#79c0ff";
+
+            return `<div style="color: ${color}; padding: 1px 0; border-bottom: 1px solid rgba(255,255,255,0.03);">${escapeHtml(line)}</div>`;
+        }
+
+        function appendLogLines(lines) {
+            let c = document.getElementById('log-console-container');
+            if (!c) return;
+            let auto = document.getElementById('log-autoscroll')?.checked;
+
+            let html = "";
+            for (let l of lines) {
+                html += formatLogLine(l);
+                logLineCount++;
+            }
+            c.insertAdjacentHTML('beforeend', html);
+
+            // Cap lines rendered in browser DOM to avoid memory leak
+            while (c.children.length > 1000) {
+                c.removeChild(c.firstElementChild);
+                logLineCount--;
+            }
+
+            updateLogCounter();
+            if (auto) {
+                c.scrollTop = c.scrollHeight;
+            }
+        }
+
+        window.updateMqttUI = function(cfg) {};
+
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                closeChannelEditModal();
+                closeLogModal();
+            }
+        });
+
+        let rxAnalyser = null;
+        function drawRxSpectrum() {
+            requestAnimationFrame(drawRxSpectrum);
+            let canvas = document.getElementById('vfo-spectrum');
+            if (!canvas) return;
+            let ctx = canvas.getContext('2d');
+            
+            if (canvas.width !== canvas.offsetWidth) canvas.width = canvas.offsetWidth;
+            if (canvas.height !== canvas.offsetHeight) canvas.height = canvas.offsetHeight;
+
+            if (!rxAnalyser && window.audioContext && window.webrtcPC) {}
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+
+        window.onload = () => {
+            let hashMatch = window.location.hash.match(/freq=([0-9]+)/);
+            if (hashMatch) currentFreq = parseInt(hashMatch[1]);
+            let modMatch = window.location.hash.match(/mod=([a-zA-Z0-9]+)/i);
+            if (modMatch) { currentMod = modMatch[1].toUpperCase(); document.getElementById('vfo-mod-toggle').innerText = currentMod; }
+            
+            // Load saved scan ticks from localStorage/cookies
+            let savedTicks = parseInt(getCookie('quansheng_scan_ticks') || localStorage.getItem('quansheng_scan_ticks'));
+            if (!isNaN(savedTicks) && savedTicks >= 5 && savedTicks <= 100) {
+                scanConfig.ticks = savedTicks;
+                let speedEl = document.getElementById('scan-speed');
+                let valEl = document.getElementById('scan-speed-val');
+                if (speedEl) speedEl.value = savedTicks;
+                if (valEl) valEl.innerText = `${savedTicks} (${savedTicks * 10} ms)`;
+            }
+
+            // Load saved scan resume delay from cookies/localStorage
+            let savedDelay = getSavedScanDelay();
+            scanResumeDelaySeconds = savedDelay;
+            scanConfig.delay = savedDelay;
+            let delayEl = document.getElementById('scan-resume-delay');
+            let delayValEl = document.getElementById('scan-delay-val');
+            if (delayEl) delayEl.value = savedDelay;
+            if (delayValEl) delayValEl.innerText = `${savedDelay.toFixed(1)} s`;
+            let delayContainer = document.getElementById('scan-delay-container');
+            if (delayContainer) {
+                let actionEl = document.getElementById('scan-action');
+                let act = actionEl ? actionEl.value : 'pause';
+                delayContainer.style.display = (act === 'pause') ? 'block' : 'none';
+            }
+
+            renderVFO(); renderTabs(); renderPresets(); initWebSocket(); drawRxSpectrum();
+            setInterval(updateVfoStatusIndicators, 500);
+        };
+    </script>
+</body>
+</html>

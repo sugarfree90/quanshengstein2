@@ -1,0 +1,161 @@
+{
+    "history": [],
+    "tabs": [
+        {
+            "name": "2m (VHF)",
+            "presets": [
+                {
+                    "name": "145.500 Calling",
+                    "freq": 145500000,
+                    "mod": "FM",
+                    "pwr": 6,
+                    "ctcss": 0,
+                    "dcs": 0,
+                    "shift_dir": 0,
+                    "shift_val": 0,
+                    "scan": true
+                },
+                {
+                    "name": "145.550 Local",
+                    "freq": 145550000,
+                    "mod": "FM",
+                    "pwr": 6,
+                    "ctcss": 0,
+                    "dcs": 0,
+                    "shift_dir": 0,
+                    "shift_val": 0,
+                    "scan": true
+                },
+                {
+                    "name": "144.800 APRS",
+                    "freq": 144800000,
+                    "mod": "FM",
+                    "pwr": 6,
+                    "ctcss": 0,
+                    "dcs": 0,
+                    "shift_dir": 0,
+                    "shift_val": 0,
+                    "scan": false
+                }
+            ]
+        },
+        {
+            "name": "70cm (UHF)",
+            "presets": [
+                {
+                    "name": "433.500 Calling",
+                    "freq": 433500000,
+                    "mod": "FM",
+                    "pwr": 6,
+                    "ctcss": 0,
+                    "dcs": 0,
+                    "shift_dir": 0,
+                    "shift_val": 0,
+                    "scan": true
+                },
+                {
+                    "name": "PMR 1",
+                    "freq": 446006250,
+                    "mod": "NFM",
+                    "pwr": 1,
+                    "ctcss": 0,
+                    "dcs": 0,
+                    "shift_dir": 0,
+                    "shift_val": 0,
+                    "scan": true
+                }
+            ]
+        },
+        {
+            "name": "Airband (AM)",
+            "presets": [
+                {
+                    "name": "121.500 Guard",
+                    "freq": 121500000,
+                    "mod": "AM",
+                    "pwr": 1,
+                    "ctcss": 0,
+                    "dcs": 0,
+                    "shift_dir": 0,
+                    "shift_val": 0,
+                    "scan": true
+                }
+            ]
+        }
+    ],
+    "presets": [
+        {
+            "name": "145.500 Calling",
+            "freq": 145500000,
+            "mod": "FM",
+            "pwr": 6,
+            "ctcss": 0,
+            "dcs": 0,
+            "shift_dir": 0,
+            "shift_val": 0,
+            "scan": true
+        },
+        {
+            "name": "145.550 Local",
+            "freq": 145550000,
+            "mod": "FM",
+            "pwr": 6,
+            "ctcss": 0,
+            "dcs": 0,
+            "shift_dir": 0,
+            "shift_val": 0,
+            "scan": true
+        },
+        {
+            "name": "144.800 APRS",
+            "freq": 144800000,
+            "mod": "FM",
+            "pwr": 6,
+            "ctcss": 0,
+            "dcs": 0,
+            "shift_dir": 0,
+            "shift_val": 0,
+            "scan": false
+        },
+        {
+            "name": "433.500 Calling",
+            "freq": 433500000,
+            "mod": "FM",
+            "pwr": 6,
+            "ctcss": 0,
+            "dcs": 0,
+            "shift_dir": 0,
+            "shift_val": 0,
+            "scan": true
+        },
+        {
+            "name": "PMR 1",
+            "freq": 446006250,
+            "mod": "NFM",
+            "pwr": 1,
+            "ctcss": 0,
+            "dcs": 0,
+            "shift_dir": 0,
+            "shift_val": 0,
+            "scan": true
+        },
+        {
+            "name": "121.500 Guard",
+            "freq": 121500000,
+            "mod": "AM",
+            "pwr": 1,
+            "ctcss": 0,
+            "dcs": 0,
+            "shift_dir": 0,
+            "shift_val": 0,
+            "scan": true
+        }
+    ],
+    "scanlist": [],
+    "scan_config": {
+        "action": "pause",
+        "ticks": 25,
+        "delay": 2.0
+    }
+}
+
