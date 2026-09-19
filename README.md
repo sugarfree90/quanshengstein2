@@ -7,7 +7,7 @@
 [![Language](https://img.shields.io/badge/J%C4%99zyk-Polski%20(README__PL.md)-red.svg)](README_PL.md)
 
 A modern, standalone **Go (Golang)** service for complete remote control of **Quansheng UV-K1 / UV-K5 / UV-K6 / UV-5R Plus / UV-K5v3** transceivers. 
-
+(Screenshot.png)
 This software is specifically built to work with:
 * 📻 **Firmware:** **[uv-k1-k5v3-firmware-CAT](https://github.com/sugarfree90/uv-k1-k5v3-firmware-CAT)** by sugarfree90 – adds native CAT commands, S-Meter telemetry (`S1`), fast memory scanning (`SCF`), and DTMF packet reporting (`RD...;`).
 * 🔌 **Hardware Interface:** **[AIOC (All-In-One-Cable)](https://github.com/skuep/AIOC)** by Simon Kueppers (`skuep`) – a single compact USB-C adapter that plugs into the radio's Kenwood 2-pin connector and integrates both the **USB-UART CAT interface** (`/dev/ttyACM0`) and the **ALSA sound card** (`plughw:1,0`) in one device.
