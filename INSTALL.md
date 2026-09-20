@@ -2,8 +2,6 @@
 
 A comprehensive, step-by-step installation and deployment guide for Single Board Computers (SBCs) such as **Orange Pi (e.g., Orange Pi Zero 3, Orange Pi 3 LTS, Orange Pi One)**, **Raspberry Pi (3 / 4 / 5 / Zero 2W)**, and servers/PCs running **Debian / Ubuntu / Armbian**.
 
-> 🇵🇱 *Dla użytkowników z Polski: Dostępna jest również [Polska wersja instrukcji (INSTALL_PL.md)](INSTALL_PL.md).*
-
 ---
 
 ## Table of Contents

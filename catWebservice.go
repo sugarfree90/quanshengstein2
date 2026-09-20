@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -317,11 +318,12 @@ type ChannelTab struct {
 }
 
 type RadioDB struct {
-	History    []HistoryEntry `json:"history"`
-	Tabs       []ChannelTab   `json:"tabs"`
-	Presets    []PresetItem   `json:"presets"`
-	Scanlist   []int          `json:"scanlist"`
-	ScanConfig ScanConfig     `json:"scan_config"`
+	History      []HistoryEntry `json:"history"`
+	Tabs         []ChannelTab   `json:"tabs"`
+	Presets      []PresetItem   `json:"presets"`
+	Scanlist     []int          `json:"scanlist"`
+	ScanConfig   ScanConfig     `json:"scan_config"`
+	PTTAudioSync bool           `json:"ptt_audio_sync"`
 }
 
 func (db *RadioDB) syncPresets() {
@@ -356,9 +358,12 @@ var radioState RadioState
 // =====================================================================
 
 var (
-	isTransmitting bool
-	txStartTime    time.Time
-	txLock         sync.Mutex
+	isTransmitting         bool
+	isTxDraining           bool
+	txDrainCancel          chan struct{}
+	txAudioSamplesReceived int64
+	txStartTime            time.Time
+	txLock                 sync.Mutex
 
 	// WebSocket clients
 	clients     = make(map[*websocket.Conn]chan []byte)
@@ -670,6 +675,7 @@ func loadDB() RadioDB {
 			Action: "pause",
 			Ticks:  25,
 		},
+		PTTAudioSync: true,
 	}
 
 	if _, err := os.Stat(dbFile); os.IsNotExist(err) {
@@ -2132,6 +2138,56 @@ func modToID(mod string) int {
 	}
 }
 
+func finalizeTxStop(data map[string]interface{}) {
+	rxFreq := 0
+	if f, ok := data["freq"].(float64); ok {
+		rxFreq = int(f)
+	}
+
+	stateLock.RLock()
+	currFreq := radioState.Freq
+	prevMon := radioState.Monitor
+	stateLock.RUnlock()
+
+	if rxFreq > 0 && rxFreq != currFreq {
+		time.Sleep(100 * time.Millisecond)
+		radio.SetVFOA(rxFreq)
+		time.Sleep(50 * time.Millisecond)
+
+		ctcss := 0.0
+		if c, ok := data["ctcss"].(float64); ok {
+			ctcss = c
+		}
+		dcs := 0
+		if d, ok := data["dcs"].(float64); ok {
+			dcs = int(d)
+		}
+
+		if ctcss > 0 {
+			radio.SetCTCSS(ctcss)
+		} else if dcs > 0 {
+			radio.SetDCS(dcs)
+		} else {
+			radio.TonesOff()
+		}
+	}
+
+	// Restore monitor (squelch) state
+	radio.SetMonitor(prevMon)
+
+	stateLock.Lock()
+	if rxFreq > 0 {
+		radioState.Freq = rxFreq
+	}
+	if c, ok := data["ctcss"].(float64); ok {
+		radioState.Ctcss = c
+	}
+	if d, ok := data["dcs"].(float64); ok {
+		radioState.Dcs = int(d)
+	}
+	stateLock.Unlock()
+}
+
 // =====================================================================
 // --- KONTROLER WEBSOCKET ---
 // =====================================================================
@@ -2181,6 +2237,11 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[WS] Web client disconnected: %s (Remaining sessions: %d)", remoteAddr, remaining)
 
 		txLock.Lock()
+		if txDrainCancel != nil {
+			close(txDrainCancel)
+			txDrainCancel = nil
+		}
+		isTxDraining = false
 		wasTx := isTransmitting
 		if isTransmitting {
 			radio.RxOn()
@@ -2264,6 +2325,11 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			if tx && len(msg) > 0 {
 				select {
 				case txAudioQueue <- msg:
+					if len(msg) > 1000 {
+						atomic.AddInt64(&txAudioSamplesReceived, int64(len(msg)/2))
+					} else {
+						atomic.AddInt64(&txAudioSamplesReceived, 960)
+					}
 				default:
 				}
 			}
@@ -2837,6 +2903,24 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
+		case "save_ptt_audio_sync":
+			if enabled, ok := data["enabled"].(bool); ok {
+				dbLock.Lock()
+				radioDB.PTTAudioSync = enabled
+				dbLock.Unlock()
+				saveDB()
+				log.Printf("[RadioDB] Saved ptt_audio_sync = %v to radio_db.json", enabled)
+
+				dbLock.RLock()
+				res, _ := json.Marshal(map[string]interface{}{
+					"cmd":      "sync_db",
+					"db":       radioDB,
+					"callsign": appCfg.Callsign,
+				})
+				dbLock.RUnlock()
+				dispatchToClients(res)
+			}
+
 		case "save_mqtt_config":
 			if cfgMap, ok := data["config"].(map[string]interface{}); ok {
 				configLock.Lock()
@@ -2976,6 +3060,29 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			_ = safeWrite(resp)
 
 		case "start_tx":
+			txLock.Lock()
+			if isTxDraining {
+				// Seamlessly resume active TX! Cancel drain countdown timer
+				if txDrainCancel != nil {
+					close(txDrainCancel)
+					txDrainCancel = nil
+				}
+				isTxDraining = false
+				isTransmitting = true
+				txLock.Unlock()
+				log.Printf("[TX Audio] PTT re-pressed during buffer drain: continuing active TX seamlessly")
+				_ = safeWrite([]byte(`{"status":"tx_on"}`))
+				break
+			}
+			if isTransmitting {
+				txLock.Unlock()
+				_ = safeWrite([]byte(`{"status":"tx_on"}`))
+				break
+			}
+			txLock.Unlock()
+
+			atomic.StoreInt64(&txAudioSamplesReceived, 0)
+
 			freq := int(data["freq"].(float64))
 			baseFreq := freq
 			if bf, ok := data["base_freq"].(float64); ok {
@@ -3008,10 +3115,10 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				shiftVal = sv
 			}
 
-			// Aktualizacja historii
+			// Add to history
 			histEntry := HistoryEntry{
 				Freq:     baseFreq,
-				Mod:      strings.ToUpper(modStr),
+				Mod:      modStr,
 				Pwr:      pwr,
 				Ctcss:    ctcss,
 				Dcs:      dcs,
@@ -3068,6 +3175,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			txLock.Lock()
 			isTransmitting = true
+			isTxDraining = false
 			txStartTime = time.Now()
 			txLock.Unlock()
 
@@ -3083,66 +3191,130 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			go publishRadioStatus()
 
 		case "stop_tx":
-			// Wait briefly to drain audio buffer
-			time.Sleep(150 * time.Millisecond)
+			dbLock.RLock()
+			syncEnabled := radioDB.PTTAudioSync
+			dbLock.RUnlock()
+
+			if pttSyncVal, hasPttSync := data["ptt_sync"].(bool); hasPttSync {
+				syncEnabled = pttSyncVal
+			}
 
 			txLock.Lock()
-			isTransmitting = false
+			wasTx := isTransmitting
+			drainingAlready := isTxDraining
 			txLock.Unlock()
 
-			stopTxAudioProcess()
-			radio.RxOn()
-
-			rxFreq := 0
-			if f, ok := data["freq"].(float64); ok {
-				rxFreq = int(f)
+			if !wasTx && !drainingAlready {
+				break
 			}
 
-			stateLock.RLock()
-			currFreq := radioState.Freq
-			prevMon := radioState.Monitor
-			stateLock.RUnlock()
-
-			if rxFreq > 0 && rxFreq != currFreq {
-				time.Sleep(100 * time.Millisecond)
-				radio.SetVFOA(rxFreq)
-				time.Sleep(50 * time.Millisecond)
-
-				ctcss := 0.0
-				if c, ok := data["ctcss"].(float64); ok {
-					ctcss = c
+			if !syncEnabled {
+				// Immediate stop (legacy without sync)
+				txLock.Lock()
+				if txDrainCancel != nil {
+					close(txDrainCancel)
+					txDrainCancel = nil
 				}
-				dcs := 0
-				if d, ok := data["dcs"].(float64); ok {
-					dcs = int(d)
+				isTxDraining = false
+				isTransmitting = false
+				txLock.Unlock()
+
+				time.Sleep(150 * time.Millisecond)
+				stopTxAudioProcess()
+				radio.RxOn()
+				finalizeTxStop(data)
+				_ = safeWrite([]byte(`{"status":"tx_off"}`))
+				go publishRadioStatus()
+				break
+			}
+
+			// PTT Audio Sync: maintain TX until the audio buffer drains completely
+			txLock.Lock()
+			if isTxDraining {
+				txLock.Unlock()
+				break
+			}
+
+			totalSamples := atomic.LoadInt64(&txAudioSamplesReceived)
+			totalDuration := time.Duration(totalSamples) * time.Second / 48000
+			elapsed := time.Since(txStartTime)
+			queueDuration := time.Duration(len(txAudioQueue)) * 20 * time.Millisecond
+
+			// Pipeline audio duration waiting to be played (queue + pipe + ALSA buffer)
+			remaining := totalDuration - elapsed + 150*time.Millisecond
+			if remaining < queueDuration+150*time.Millisecond {
+				remaining = queueDuration + 150*time.Millisecond
+			}
+			if remaining < 150*time.Millisecond {
+				remaining = 150 * time.Millisecond
+			}
+
+			isTxDraining = true
+			cancelCh := make(chan struct{})
+			txDrainCancel = cancelCh
+			drainMs := int(remaining.Milliseconds())
+			txLock.Unlock()
+
+			log.Printf("[TX Audio] PTT released with Audio Sync: draining buffer (%d ms remaining, total samples=%d, elapsed=%v)",
+				drainMs, totalSamples, elapsed.Round(time.Millisecond))
+
+			drainStartMsg, _ := json.Marshal(map[string]interface{}{
+				"cmd":      "tx_drain_start",
+				"drain_ms": drainMs,
+			})
+			_ = safeWrite(drainStartMsg)
+
+			go func(cancel chan struct{}, totalMs int, stopData map[string]interface{}) {
+				ticker := time.NewTicker(50 * time.Millisecond)
+				defer ticker.Stop()
+
+				startDrain := time.Now()
+				drainDuration := time.Duration(totalMs) * time.Millisecond
+
+				for {
+					select {
+					case <-cancel:
+						log.Printf("[TX Audio] Buffer drain cancelled (new TX started)")
+						return
+					case now := <-ticker.C:
+						elapsedDrain := now.Sub(startDrain)
+						rem := drainDuration - elapsedDrain
+						remMs := int(rem.Milliseconds())
+						if remMs <= 0 {
+							txLock.Lock()
+							if txDrainCancel != cancel {
+								txLock.Unlock()
+								return
+							}
+							txDrainCancel = nil
+							isTxDraining = false
+							isTransmitting = false
+							txLock.Unlock()
+
+							stopTxAudioProcess()
+							radio.RxOn()
+							finalizeTxStop(stopData)
+
+							log.Printf("[TX Audio] PTT Audio Sync drain completed cleanly. Radio returned to RX.")
+
+							doneMsg, _ := json.Marshal(map[string]interface{}{
+								"cmd":    "tx_drain_done",
+								"status": "tx_off",
+							})
+							_ = safeWrite(doneMsg)
+							go publishRadioStatus()
+							return
+						}
+
+						progMsg, _ := json.Marshal(map[string]interface{}{
+							"cmd":          "tx_drain_progress",
+							"remaining_ms": remMs,
+							"total_ms":     totalMs,
+						})
+						_ = safeWrite(progMsg)
+					}
 				}
-
-				if ctcss > 0 {
-					radio.SetCTCSS(ctcss)
-				} else if dcs > 0 {
-					radio.SetDCS(dcs)
-				} else {
-					radio.TonesOff()
-				}
-			}
-
-			// Restore monitor (squelch) state
-			radio.SetMonitor(prevMon)
-
-			stateLock.Lock()
-			if rxFreq > 0 {
-				radioState.Freq = rxFreq
-			}
-			if c, ok := data["ctcss"].(float64); ok {
-				radioState.Ctcss = c
-			}
-			if d, ok := data["dcs"].(float64); ok {
-				radioState.Dcs = int(d)
-			}
-			stateLock.Unlock()
-
-			_ = safeWrite([]byte(`{"status":"tx_off"}`))
-			go publishRadioStatus()
+			}(cancelCh, drainMs, data)
 
 		case "heartbeat":
 			// Keep-alive (no-op)

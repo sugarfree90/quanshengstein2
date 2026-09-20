@@ -4,17 +4,14 @@
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-green.svg)](https://github.com)
 [![Architecture](https://img.shields.io/badge/Arch-ARM64%20%7C%20ARMv7%20%7C%20AMD64-orange.svg)](https://github.com)
 [![License](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
-[![Language](https://img.shields.io/badge/J%C4%99zyk-Polski%20(README__PL.md)-red.svg)](README_PL.md)
 
 A modern, standalone **Go (Golang)** service for complete remote control of **Quansheng UV-K1 / UV-K5 / UV-K6 / UV-5R Plus / UV-K5v3** transceivers. 
-(Screenshot.png)
+
 This software is specifically built to work with:
 * 📻 **Firmware:** **[uv-k1-k5v3-firmware-CAT](https://github.com/sugarfree90/uv-k1-k5v3-firmware-CAT)** by sugarfree90 – adds native CAT commands, S-Meter telemetry (`S1`), fast memory scanning (`SCF`), and DTMF packet reporting (`RD...;`).
 * 🔌 **Hardware Interface:** **[AIOC (All-In-One-Cable)](https://github.com/skuep/AIOC)** by Simon Kueppers (`skuep`) – a single compact USB-C adapter that plugs into the radio's Kenwood 2-pin connector and integrates both the **USB-UART CAT interface** (`/dev/ttyACM0`) and the **ALSA sound card** (`plughw:1,0`) in one device.
 
 It features ultra-low-latency bi-directional **WebRTC (Pion)** audio streaming, a built-in **OpenWebRX** HTTPS reverse proxy with automatic CAT overlay injection, an automated **APRS IGate (Direwolf Governor)**, **DTMF tone detection**, comprehensive **MQTT telemetry**, and an in-memory **RAM logging system** specifically designed to prevent flash memory wear on Single Board Computers (SBCs like Orange Pi and Raspberry Pi).
-
-> 🇵🇱 *Dla użytkowników z Polski: Dostępna jest również [Polska wersja dokumentacji (README_PL.md)](README_PL.md).*
 
 ---
 
@@ -60,6 +57,12 @@ It features ultra-low-latency bi-directional **WebRTC (Pion)** audio streaming, 
 * **Reception (RX):** Captures audio from the radio's ALSA interface via `ffmpeg`, encodes it into Opus, and streams via WHEP directly to modern web browsers with minimal latency.
 * **Digital RX Pre-Amplifier:** Browser-side Web Audio API gain adjustment from **0.2x to 10.0x** with persistent storage in browser cookies.
 * **Transmission (TX / PTT):** Secure microphone capture in the browser (over HTTPS), streaming Opus packets over WebSocket, hardware ALSA decoding to the radio mic input, and automatic CAT PTT engagement protected by a configurable Time-Out Timer (TOT).
+* **PTT Audio Sync (Buffer Tail & Anti-Clipping Protection):**
+  * **The Problem:** In remote web operation, releasing the PTT button the moment you finish speaking often drops the transmitter carrier too soon, cutting off your final words or callsign before the buffered audio can complete its path through the browser worklet, WebSocket queue, ffmpeg pipe, and ALSA sound card buffer.
+  * **The Solution:** When PTT Audio Sync is active, releasing PTT flushes the remaining microphone audio buffer to the server and maintains the radio in transmit mode (`TX`) until all buffered audio has finished playing out through ALSA.
+  * **Live Progress Bar on PTT:** An animated progress bar and remaining countdown timer display directly on the PTT button (e.g. `PTT SYNC (0.4s)`). The button returns to its ready green state (`Ready! Push PTT`) only after the transmission has completely cleared and the radio has returned to RX.
+  * **Non-Blocking Instant Resumption:** Pressing PTT again while the buffer is draining immediately cancels the drain timer and seamlessly resumes active transmitting without dropping the carrier or clicking the transceiver's relay.
+  * **Persistent Setting:** Toggleable via the checkbox directly to the right of *Enable Speech Compressor* under the settings gear icon (⚙️) in the OpenWebRX overlay (`owrx.js`), saved in `radio_db.json` and synchronized across all connected browser clients.
 
 ### 3. OpenWebRX HTTPS Reverse Proxy with Automatic CAT Overlay
 * **Built-in HTTPS Proxy (Port `8074`):** Seamlessly proxies OpenWebRX HTTP and WebSocket SDR waterfall streams under the same trusted TLS certificate.

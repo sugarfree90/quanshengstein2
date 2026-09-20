@@ -156,6 +156,7 @@
         "action": "pause",
         "ticks": 25,
         "delay": 2.0
-    }
+    },
+    "ptt_audio_sync": true
 }
 

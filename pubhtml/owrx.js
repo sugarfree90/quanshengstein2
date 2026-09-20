@@ -58,6 +58,141 @@ let lastProfileName = "";
 let lastPolledFreq = 0;
 window.preTxVolume = null;
 window.isStickyPtt = false;
+window.isDraining = false;
+window.pttAudioSyncEnabled = (localStorage.getItem('ptt_audio_sync') !== "0"); // default enabled
+let drainInterval = null;
+let drainStartTime = 0;
+let drainTotalDuration = 600;
+
+function flushRemainingTxAudio() {
+    if (txPcmBuffer && txPcmBuffer.length > 0 && opusEncoder) {
+        let padded = new Float32Array(960);
+        padded.set(txPcmBuffer);
+        txPcmBuffer = new Float32Array(0);
+        try {
+            let audioData = new AudioData({
+                format: 'f32-planar', sampleRate: 48000, numberOfFrames: 960,
+                numberOfChannels: 1, timestamp: txTimestamp, data: padded
+            });
+            txTimestamp += 20000;
+            opusEncoder.encode(audioData);
+            audioData.close();
+        } catch(e) {}
+    }
+    if (opusEncoder && typeof opusEncoder.flush === 'function') {
+        opusEncoder.flush().catch(() => {});
+    }
+}
+
+function startDrainAnimation(exactDurationMs) {
+    window.isDraining = true;
+    let progressBar = document.getElementById('ptt-progress-bar');
+    let container = document.getElementById('ptt-container');
+    let btnTxt = document.getElementById('ptt-text');
+
+    if (exactDurationMs && exactDurationMs > 0) {
+        drainTotalDuration = exactDurationMs;
+    } else {
+        drainTotalDuration = Math.max(drainTotalDuration, 500);
+    }
+    drainStartTime = performance.now();
+
+    if (progressBar) {
+        progressBar.style.display = "block";
+        progressBar.style.width = "100%";
+    }
+    if (container) {
+        container.style.backgroundColor = "#c62828";
+    }
+    if (btnTxt) {
+        btnTxt.innerText = `PTT SYNC (${(drainTotalDuration / 1000).toFixed(1)}s)`;
+    }
+
+    clearInterval(drainInterval);
+    drainInterval = setInterval(() => {
+        if (!window.isDraining) {
+            clearInterval(drainInterval);
+            return;
+        }
+        let elapsed = performance.now() - drainStartTime;
+        let remaining = Math.max(0, drainTotalDuration - elapsed);
+        let pct = (remaining / drainTotalDuration) * 100;
+        if (progressBar) progressBar.style.width = pct.toFixed(1) + "%";
+        if (btnTxt) btnTxt.innerText = `PTT SYNC (${(remaining / 1000).toFixed(1)}s)`;
+
+        if (remaining <= 0) {
+            clearInterval(drainInterval);
+        }
+    }, 40);
+}
+
+function updateDrainProgress(remainingMs, totalMs) {
+    if (!window.isDraining) return;
+    drainTotalDuration = totalMs;
+    drainStartTime = performance.now() - (totalMs - remainingMs);
+    let progressBar = document.getElementById('ptt-progress-bar');
+    let btnTxt = document.getElementById('ptt-text');
+    let pct = Math.max(0, Math.min(100, (remainingMs / totalMs) * 100));
+    if (progressBar) progressBar.style.width = pct.toFixed(1) + "%";
+    if (btnTxt) btnTxt.innerText = `PTT SYNC (${(remainingMs / 1000).toFixed(1)}s)`;
+}
+
+function cancelDrain() {
+    window.isDraining = false;
+    clearInterval(drainInterval);
+    drainInterval = null;
+    let progressBar = document.getElementById('ptt-progress-bar');
+    if (progressBar) {
+        progressBar.style.display = "none";
+        progressBar.style.width = "0%";
+    }
+}
+
+function finishTxStop() {
+    window.isDraining = false;
+    isTransmitting = false;
+    cancelDrain();
+    updateConnectionState(true);
+
+    let volSlider = document.getElementById('openwebrx-panel-volume');
+    if (volSlider && window.preTxVolume !== null) {
+        volSlider.value = window.preTxVolume; 
+        if (typeof UI !== 'undefined' && UI.setVolume) UI.setVolume(window.preTxVolume); 
+        window.preTxVolume = null;
+    }
+
+    window.updateCompactSMeter(-127, 0);
+
+    let profile = getActiveProfile();
+    let ctcssSelect = document.getElementById('tx-ctcss');
+    let dcsSelect = document.getElementById('tx-dcs');
+    if (txSocket && txSocket.readyState === WebSocket.OPEN && !window.pttAudioSyncEnabled) {
+        txSocket.send(JSON.stringify({ 
+            cmd: "stop_tx", ptt_sync: false, freq: profile ? profile.freq : 0, mod: profile ? profile.mod : "FM",
+            ctcss: ctcssSelect ? parseFloat(ctcssSelect.value) : 0, dcs: dcsSelect ? parseInt(dcsSelect.value) : 0
+        }));
+    }
+    
+    if (typeof window.updateAudioMute === 'function') {
+        window.updateAudioMute();
+    } else if (remoteAudioEl) {
+        remoteAudioEl.muted = (!rxSourceNode) ? false : true;
+    }
+
+    setTimeout(() => { if (typeof Waterfall !== 'undefined' && typeof Waterfall.setAutoRange === 'function') Waterfall.setAutoRange(); }, 800);
+}
+
+window.togglePttAudioSync = function(enabled) {
+    window.pttAudioSyncEnabled = !!enabled;
+    localStorage.setItem('ptt_audio_sync', window.pttAudioSyncEnabled ? "1" : "0");
+    setCookie('ptt_audio_sync', window.pttAudioSyncEnabled ? "1" : "0", 365);
+    if (txSocket && txSocket.readyState === WebSocket.OPEN) {
+        txSocket.send(JSON.stringify({
+            cmd: "save_ptt_audio_sync",
+            enabled: window.pttAudioSyncEnabled
+        }));
+    }
+};
 
 let rxAudioEnabled = false;
 
@@ -123,10 +258,13 @@ function updateConnectionState(state) {
     
     if (!btn || !btnTxt || !container) return;
 
+    let progressBar = document.getElementById('ptt-progress-bar');
+
     if (!isConnected) {
         container.style.backgroundColor = "#555";
         btn.style.cursor = "not-allowed";
         btnTxt.innerText = "No connection to radio (Offline)";
+        if (progressBar) { progressBar.style.display = "none"; progressBar.style.width = "0%"; }
         
         if(window.isStickyPtt) {
             window.isStickyPtt = false;
@@ -134,17 +272,25 @@ function updateConnectionState(state) {
             if(stickyBtn) { stickyBtn.style.backgroundColor = "rgba(0,0,0,0.2)"; stickyBtn.innerHTML = "🔓"; }
         }
     } else {
-        if (isTransmitting) {
+        if (window.isDraining) {
+            container.style.backgroundColor = "#c62828";
+            btn.style.cursor = "pointer";
+            if (progressBar) progressBar.style.display = "block";
+        } else if (isTransmitting) {
             container.style.backgroundColor = "red";
+            btn.style.cursor = "pointer";
             btnTxt.innerText = "TRANSMITTING (TX)";
+            if (progressBar) { progressBar.style.display = "none"; progressBar.style.width = "0%"; }
         } else if (micReady) {
             container.style.backgroundColor = "#4CAF50";
             btn.style.cursor = "pointer";
             btnTxt.innerText = "Ready! Push PTT";
+            if (progressBar) { progressBar.style.display = "none"; progressBar.style.width = "0%"; }
         } else {
             container.style.backgroundColor = "#2196F3";
             btn.style.cursor = "pointer";
             btnTxt.innerText = "🎙️ Click to activate microphone";
+            if (progressBar) { progressBar.style.display = "none"; progressBar.style.width = "0%"; }
         }
     }
 }
@@ -615,6 +761,7 @@ function createTxPanel() {
 
     let savedGain = getCookie('tx_mic_gain') || localStorage.getItem('tx_mic_gain') || "1.0";
     let savedComp = (getCookie('tx_mic_comp') || localStorage.getItem('tx_mic_comp')) === "1" ? "checked" : "";
+    let savedPttSync = (window.pttAudioSyncEnabled !== false && localStorage.getItem('ptt_audio_sync') !== "0") ? "checked" : "";
     let savedRxAudio = (getCookie('tx_rx_audio') || localStorage.getItem('tx_rx_audio')) === "1" ? "checked" : "";
     let savedRxGain = getSavedRxGain();
 
@@ -682,9 +829,14 @@ function createTxPanel() {
                 <input type="range" id="mic-gain-slider" min="0.1" max="10.0" step="0.1" value="${savedGain}" oninput="window.updateMicEffects()" style="width: 100%;">
             </div>
             
-            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; padding: 3px 0;">
-                <input type="checkbox" id="mic-comp-enable" onchange="window.updateMicRouting()" style="transform: scale(1.3);" ${savedComp}> Enable Speech Compressor
-            </label>
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding: 3px 0;">
+                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px;">
+                    <input type="checkbox" id="mic-comp-enable" onchange="window.updateMicRouting()" style="transform: scale(1.3);" ${savedComp}> Enable Speech Compressor
+                </label>
+                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px;" title="Podtrzymuje nadawanie PTT do momentu całkowitego wyemitowania bufora audio, zapobiegając ucinaniu końcówek wypowiedzi">
+                    <input type="checkbox" id="ptt-sync-enable" onchange="window.togglePttAudioSync(this.checked)" style="transform: scale(1.3);" ${savedPttSync}> PTT Audio Sync
+                </label>
+            </div>
             
             <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:5px;">
                 <div style="display:flex; flex-direction:column; gap:5px;">
@@ -744,7 +896,7 @@ async function initMicrophone() {
                 output: (chunk, metadata) => {
                     let opusData = new Uint8Array(chunk.byteLength);
                     chunk.copyTo(opusData);
-                    if (isTransmitting && txSocket && txSocket.readyState === WebSocket.OPEN) {
+                    if ((isTransmitting || window.isDraining) && txSocket && txSocket.readyState === WebSocket.OPEN) {
                         txSocket.send(opusData.buffer);
                     }
                 },
@@ -788,7 +940,7 @@ async function initMicrophone() {
                     opusEncoder.encode(audioData);
                     audioData.close();
                 }
-            } else {
+            } else if (!window.isDraining) {
                 txPcmBuffer = new Float32Array(0);
             }
         };
@@ -880,25 +1032,52 @@ function setTxState(state) {
         return; 
     }
 
-    if (state === isTransmitting) return;
-
-    isTransmitting = state;
-
-    // Automatically mutes WebRTC audio during transmit!
-    if (typeof window.updateAudioMute === 'function') {
-        window.updateAudioMute();
-    } else if (remoteAudioEl) {
-        if (!rxSourceNode) {
-            remoteAudioEl.muted = isTransmitting;
-        } else {
-            remoteAudioEl.muted = true;
-        }
-    }
-
     let volSlider = document.getElementById('openwebrx-panel-volume');
     let profile = getActiveProfile();
 
-    if (isTransmitting) {
+    // If PTT pressed again while draining: seamlessly resume active TX without delay or click!
+    if (state === true && window.isDraining) {
+        cancelDrain();
+        isTransmitting = true;
+        updateConnectionState(true);
+
+        const cVal = document.getElementById('compact-smeter-val');
+        if (cVal) { cVal.innerText = "TX"; cVal.style.color = "#ff1744"; cVal.style.textShadow = "0 0 8px #ff1744"; }
+
+        let targetFreq = profile.freq;
+        let pwrSelect = document.getElementById('tx-power');
+        let ctcssSelect = document.getElementById('tx-ctcss');
+        let dcsSelect = document.getElementById('tx-dcs');
+        let shiftDirSelect = document.getElementById('tx-off-dir');
+        let shiftValInput = document.getElementById('tx-off-val');
+        let shiftDir = shiftDirSelect ? parseInt(shiftDirSelect.value) : 0;
+        let shiftValMHz = shiftValInput ? parseFloat(shiftValInput.value) : 0;
+        let shiftHz = Math.round(shiftValMHz * 1000000);
+        if (shiftDir === 1) targetFreq += shiftHz;
+        else if (shiftDir === 2) targetFreq -= shiftHz;
+
+        txSocket.send(JSON.stringify({
+            cmd: "start_tx", base_freq: profile.freq, freq: targetFreq, mod: profile.mod,
+            pwr: pwrSelect ? parseInt(pwrSelect.value) : 7,
+            ctcss: ctcssSelect ? parseFloat(ctcssSelect.value) : 0, dcs: dcsSelect ? parseInt(dcsSelect.value) : 0,
+            shift_dir: shiftDir, shift_val: shiftValMHz
+        }));
+        return;
+    }
+
+    if (state === isTransmitting) return;
+
+    if (state === true) {
+        cancelDrain();
+        isTransmitting = true;
+
+        // Automatically mutes WebRTC audio during transmit!
+        if (typeof window.updateAudioMute === 'function') {
+            window.updateAudioMute();
+        } else if (remoteAudioEl) {
+            remoteAudioEl.muted = true;
+        }
+
         updateConnectionState(true);
         if (volSlider) {
             window.preTxVolume = volSlider.value;
@@ -934,24 +1113,23 @@ function setTxState(state) {
             shift_dir: shiftDir, shift_val: shiftValMHz
         }));
     } else {
-        updateConnectionState(true);
-        if (volSlider && window.preTxVolume !== null) {
-            volSlider.value = window.preTxVolume; 
-            if (typeof UI !== 'undefined' && UI.setVolume) UI.setVolume(window.preTxVolume); 
-            window.preTxVolume = null;
+        // PTT released
+        flushRemainingTxAudio();
+        isTransmitting = false;
+
+        if (window.pttAudioSyncEnabled) {
+            startDrainAnimation();
+            let ctcssSelect = document.getElementById('tx-ctcss');
+            let dcsSelect = document.getElementById('tx-dcs');
+            txSocket.send(JSON.stringify({ 
+                cmd: "stop_tx", ptt_sync: true, freq: profile ? profile.freq : 0, mod: profile ? profile.mod : "FM",
+                ctcss: ctcssSelect ? parseFloat(ctcssSelect.value) : 0, dcs: dcsSelect ? parseInt(dcsSelect.value) : 0
+            }));
+            return;
         }
 
-        window.updateCompactSMeter(-127, 0);
-
-        let ctcssSelect = document.getElementById('tx-ctcss');
-        let dcsSelect = document.getElementById('tx-dcs');
-        
-        txSocket.send(JSON.stringify({ 
-            cmd: "stop_tx", freq: profile.freq, mod: profile.mod,
-            ctcss: ctcssSelect ? parseFloat(ctcssSelect.value) : 0, dcs: dcsSelect ? parseInt(dcsSelect.value) : 0
-        }));
-        
-        setTimeout(() => { if (typeof Waterfall !== 'undefined' && typeof Waterfall.setAutoRange === 'function') Waterfall.setAutoRange(); }, 800);
+        // Immediate stop without sync
+        finishTxStop();
     }
 }
 
@@ -970,7 +1148,11 @@ function createPttButton() {
 
     let btn = document.createElement("button");
     btn.id = "ptt-button"; 
-    btn.innerHTML = `<canvas id="ptt-spectrum" style="position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none;"></canvas><span id="ptt-text" style="position:relative; z-index:1; text-shadow: 1px 1px 3px rgba(0,0,0,0.8);">Loading...</span>`;
+    btn.innerHTML = `
+        <canvas id="ptt-spectrum" style="position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:1;"></canvas>
+        <div id="ptt-progress-bar" style="position:absolute; top:0; left:0; height:100%; width:0%; background:linear-gradient(90deg, #ff9800, #f44336); pointer-events:none; z-index:2; transition: width 0.05s linear; display:none; opacity:0.85;"></div>
+        <span id="ptt-text" style="position:relative; z-index:3; text-shadow: 1px 1px 3px rgba(0,0,0,0.8); pointer-events:none;">Loading...</span>
+    `;
     Object.assign(btn.style, { 
         flexGrow: "1", fontSize: "20px", fontWeight: "bold", color: "white", 
         backgroundColor: "transparent", border: "none", 
@@ -989,7 +1171,7 @@ function createPttButton() {
 
     const handleDown = (e) => { e.preventDefault(); if(!window.isStickyPtt) setTxState(true); };
     const handleUp = (e) => { e.preventDefault(); if(!window.isStickyPtt) setTxState(false); };
-    const handleLeave = (e) => { e.preventDefault(); if(!window.isStickyPtt) setTxState(false); };
+    const handleLeave = (e) => { e.preventDefault(); if(!window.isStickyPtt && isTransmitting) setTxState(false); };
 
     btn.addEventListener("mousedown", handleDown);
     btn.addEventListener("mouseup", handleUp);
@@ -1178,6 +1360,19 @@ function initTxPlugin() {
                             }
                         }, 1500);
                     }
+                } else if (msg.cmd === "tx_drain_start") {
+                    startDrainAnimation(msg.drain_ms);
+                } else if (msg.cmd === "tx_drain_progress") {
+                    updateDrainProgress(msg.remaining_ms, msg.total_ms);
+                } else if (msg.cmd === "tx_drain_done" || msg.status === "tx_off") {
+                    finishTxStop();
+                } else if (msg.cmd === "sync_db" && msg.db) {
+                    if (typeof msg.db.ptt_audio_sync !== 'undefined') {
+                        window.pttAudioSyncEnabled = !!msg.db.ptt_audio_sync;
+                        localStorage.setItem('ptt_audio_sync', window.pttAudioSyncEnabled ? "1" : "0");
+                        let chk = document.getElementById('ptt-sync-enable');
+                        if (chk) chk.checked = window.pttAudioSyncEnabled;
+                    }
                 }
             } catch(e) {}
         }
@@ -1185,6 +1380,8 @@ function initTxPlugin() {
 
     txSocket.onclose = (ev) => { 
         console.warn("[owrx.js] WebSocket disconnected from " + wsUrl, ev);
+        cancelDrain();
+        finishTxStop();
         updateConnectionState(false); 
         clearInterval(heartbeatInterval); 
         setTimeout(initTxPlugin, 5000); 
