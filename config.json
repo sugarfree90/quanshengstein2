@@ -26,6 +26,12 @@
     "cert_file": "cert.pem",
     // Path to TLS private key file (auto-generated for 10 years if missing)
     "key_file": "key.pem",
+    // Single user mode: allows only one active operator session at a time; other clients can view/take over
+    "single_user_mode": true,
+    // Only LAN mode: disables external STUN queries for field/offline networks without internet
+    "only_lan": false,
+    // STUN server used for WebRTC ICE candidate discovery (ignored if only_lan is true)
+    "stun_server": "stun:stun.l.google.com:19302",
 
     // =========================================================================
     // OPENWEBRX HTTPS PROXY & OVERLAY
@@ -61,9 +67,9 @@
     // Internal loopback UDP port used for WebRTC Opus RTP audio stream
     "audio_rtp_port": 4000,
     // ffmpeg command to capture radio RX audio and encode to Opus RTP stream
-    "rx_audio_cmd": "ffmpeg -hide_banner -loglevel error -f alsa -thread_queue_size 1024 -ar 48000 -ac 1 -i {DEVICE} -c:a libopus -b:a 48k -vbr off -application voip -frame_duration 20 -f rtp rtp://127.0.0.1:4000",
+    "rx_audio_cmd": "ffmpeg -hide_banner -loglevel error -flags low_delay -fflags nobuffer -probesize 32 -analyzeduration 0 -f alsa -thread_queue_size 64 -ar 48000 -ac 1 -i {DEVICE} -c:a libopus -b:a 48k -vbr off -application voip -frame_duration 20 -flush_packets 1 -f rtp rtp://127.0.0.1:4000",
     // ffmpeg command to decode TX audio from browser and output to radio microphone
-    "tx_audio_cmd": "ffmpeg -hide_banner -loglevel error -f ogg -i pipe:0 -f alsa {DEVICE}",
+    "tx_audio_cmd": "ffmpeg -hide_banner -loglevel error -flags low_delay -fflags nobuffer -probesize 32 -analyzeduration 0 -f ogg -i pipe:0 -f s16le -ac 1 -ar 48000 - | aplay -D {DEVICE} -f S16_LE -c 1 -r 48000 --buffer-time=20000 --period-time=5000 -q",
 
     // =========================================================================
     // TRANSMITTER SAFETY & WATCHDOG

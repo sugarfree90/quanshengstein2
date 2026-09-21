@@ -94,8 +94,7 @@
         .history-tile:hover { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 0 8px rgba(33, 150, 243, 0.4); }
 
         /* PRESETS LIST WITH SCANNER MECHANICS */
-        .presets-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-        .presets-header h2 { margin: 0; font-size: 16px; color: #aaa; }
+        .presets-header { display: flex; justify-content: flex-end; align-items: center; margin-bottom: 10px; }
         .btn-action { background: #444; color: #fff; border: 1px solid #555; border-radius: 5px; width: 32px; height: 32px; font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.2s; }
         .btn-action.primary { background: var(--accent); border: none; }
         .btn-action:hover { filter: brightness(1.2); }
@@ -187,9 +186,10 @@
             transition: box-shadow 0.1s, border-color 0.1s;
         }
 
-        .preset-item.currently-scanned {
-            border-color: var(--accent);
-            box-shadow: inset 0 0 15px rgba(33, 150, 243, 0.4);
+        .preset-item.currently-scanned,
+        .preset-item.active-vfo {
+            border-color: var(--accent) !important;
+            box-shadow: inset 0 0 15px rgba(33, 150, 243, 0.4), 0 0 6px rgba(33, 150, 243, 0.3) !important;
         }
 
         .preset-bg-meter {
@@ -515,12 +515,11 @@
         <div id="history-tiles" class="history-tiles-wrapper"></div>
 
         <div class="presets-header">
-            <h2>Saved Channels</h2>
             <div style="display:flex; gap: 6px; align-items: center; flex-wrap: wrap;">
                 <button class="btn-action" id="btn-scan-config" onclick="toggleScanConfig()" title="Scanner & Tab Configuration">⚙️</button>
                 <button class="btn-scan" id="btn-scan-tab" onclick="toggleScanTab()" title="Scan selected channels in current tab">SCAN</button>
                 <button class="btn-scan" id="btn-scan-all" onclick="toggleScanAll()" title="Scan all selected channels across all tabs">SCAN ALL</button>
-                <a class="btn-scan" id="btn-owrx" href="/owrx/" target="_blank" style="display:none; text-decoration:none; align-items:center; justify-content:center; background:#ff9800; color:#fff;" title="Open OpenWebRX (SDR Receiver with CAT)">OWRX</a>
+                <a class="btn-scan" id="btn-owrx" href="/owrx/" target="_blank" rel="noopener noreferrer" style="display:none; text-decoration:none; align-items:center; justify-content:center; background:#ff9800; color:#fff;" title="Open OpenWebRX (SDR Receiver with CAT)">OWRX</a>
                 <button class="btn-action primary" onclick="saveCurrentSettingsAsPreset()" title="Save current settings as new channel">+</button>
             </div>
         </div>
@@ -683,6 +682,25 @@
             </div>
         </div>
     </div>
+    <!-- SINGLE USER MODE OVERLAY MODAL -->
+    <div id="single-user-modal" class="modal-overlay" style="display: none; z-index: 999999; background: rgba(0, 0, 0, 0.85); backdrop-filter: blur(6px);">
+        <div class="modal-card" style="max-width: 450px; border: 2px solid #ff9800; text-align: center; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.9);">
+            <div id="su-modal-icon" style="font-size: 42px; margin-bottom: 8px;">📻🔒</div>
+            <h3 id="su-modal-title" style="margin: 0 0 12px 0; color: #ff9800; font-size: 20px;">Radio jest obecnie używane</h3>
+            <p id="su-modal-desc" style="font-size: 13px; color: #ccc; margin: 0 0 16px 0; line-height: 1.5;">
+                Włączony jest tryb pojedynczego użytkownika. Inny operator ma obecnie kontrolę nad radiem:
+            </p>
+            <div id="su-modal-details" style="background: rgba(0,0,0,0.5); border: 1px solid #444; border-radius: 8px; padding: 14px; text-align: left; font-size: 13px; margin-bottom: 20px; line-height: 1.6;">
+                <div><strong style="color: #aaa;">Adres IP:</strong> <span id="su-modal-ip" style="color: #4CAF50; font-family: monospace; font-weight: bold;">--</span></div>
+                <div><strong style="color: #aaa;">Urządzenie:</strong> <span id="su-modal-device" style="color: #2196F3;">--</span></div>
+                <div><strong style="color: #aaa;">Połączony od:</strong> <span id="su-modal-time" style="color: #eee; font-family: monospace;">--</span></div>
+            </div>
+            <div style="display: flex; gap: 10px; justify-content: center;">
+                <button id="su-takeover-btn" onclick="takeoverSession()" style="background: #ff9800; color: #000; border: none; font-weight: bold; font-size: 15px; padding: 12px 24px; border-radius: 6px; cursor: pointer; transition: all 0.2s; box-shadow: 0 4px 15px rgba(255,152,0,0.4);">
+                    ⚡ Przejmij sesję
+                </button>
+            </div>
+        </div>
     </div>
 
     <!-- Load WebRTC PTT widget from owrx.js -->
@@ -842,6 +860,7 @@
             currentMod = currentMod === "FM" ? "AM" : "FM";
             document.getElementById('vfo-mod-toggle').innerText = currentMod;
             setChannelName(""); 
+            if (typeof setActiveVfoPreset === 'function') setActiveVfoPreset(null);
             debounceHashUpdate();
         };
 
@@ -923,6 +942,7 @@
             if (currentFreq < 110000000) currentFreq = 110000000;
             if (currentFreq > 480000000) currentFreq = 480000000;
             setChannelName(""); renderVFO(); debounceHashUpdate();
+            if (typeof setActiveVfoPreset === 'function') setActiveVfoPreset(null);
         }
 
         function debounceHashUpdate() {
@@ -943,7 +963,7 @@
         const vfoUnit = document.getElementById('vfo-unit');
 
         vfoContainer.addEventListener('dblclick', () => { vfoWrapper.style.display = 'none'; vfoUnit.style.display = 'none'; manualInput.style.display = 'block'; manualInput.value = (currentFreq / 1000000).toFixed(3); manualInput.focus(); });
-        manualInput.addEventListener('blur', () => { let val = parseFloat(manualInput.value); if (!isNaN(val) && val >= 110.000 && val <= 480.000) { currentFreq = Math.round(val * 1000000); setChannelName(""); debounceHashUpdate(); } manualInput.style.display = 'none'; vfoWrapper.style.display = 'flex'; vfoUnit.style.display = 'inline'; renderVFO(); });
+        manualInput.addEventListener('blur', () => { let val = parseFloat(manualInput.value); if (!isNaN(val) && val >= 110.000 && val <= 480.000) { currentFreq = Math.round(val * 1000000); setChannelName(""); debounceHashUpdate(); if (typeof setActiveVfoPreset === 'function') setActiveVfoPreset(null); } manualInput.style.display = 'none'; vfoWrapper.style.display = 'flex'; vfoUnit.style.display = 'inline'; renderVFO(); });
         manualInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') manualInput.blur(); });
 
 // --- BROWSER SCANNER ENGINE (EVENT-DRIVEN WITH SCAN AND SCAN ALL SUPPORT) ---
@@ -1028,6 +1048,57 @@
                 }
             }
         };
+
+        let owrxKnownEnabled = false;
+        let owrxKnownPort = 8074;
+
+        function updateOwrxButton(owrxInfo) {
+            let owrxBtn = document.getElementById('btn-owrx');
+            if (!owrxBtn) return;
+
+            if (owrxInfo && typeof owrxInfo.enabled === 'boolean') {
+                owrxKnownEnabled = owrxInfo.enabled;
+                if (owrxInfo.port) owrxKnownPort = owrxInfo.port;
+                try {
+                    localStorage.setItem('quansheng_owrx_enabled', owrxKnownEnabled ? '1' : '0');
+                    localStorage.setItem('quansheng_owrx_port', owrxKnownPort);
+                } catch(e) {}
+            } else {
+                try {
+                    if (localStorage.getItem('quansheng_owrx_enabled') === '1') {
+                        owrxKnownEnabled = true;
+                        let p = parseInt(localStorage.getItem('quansheng_owrx_port'));
+                        if (p) owrxKnownPort = p;
+                    }
+                } catch(e) {}
+            }
+
+            if (owrxKnownEnabled) {
+                let port = owrxKnownPort || 8074;
+                owrxBtn.href = `${window.location.protocol}//${window.location.hostname}:${port}/`;
+                owrxBtn.style.display = 'inline-flex';
+            } else {
+                owrxBtn.style.display = 'none';
+            }
+        }
+
+        let activeVfoPresetKey = null;
+
+        function setActiveVfoPreset(elemKey) {
+            activeVfoPresetKey = elemKey;
+            updateActiveVfoHighlight();
+        }
+
+        function updateActiveVfoHighlight() {
+            document.querySelectorAll('.preset-item.active-vfo').forEach(el => {
+                el.classList.remove('active-vfo');
+            });
+            if (activeVfoPresetKey && !scanActive) {
+                let el = document.getElementById(`preset-item-${activeVfoPresetKey}`) ||
+                         document.querySelector(`[data-key="${activeVfoPresetKey}"]`);
+                if (el) el.classList.add('active-vfo');
+            }
+        }
 
         function clearScanHighlights() {
             document.querySelectorAll('.preset-item.currently-scanned').forEach(el => {
@@ -1184,6 +1255,7 @@
             scanActive = true;
             scanState = "SCANNING";
             currentScannedElemKey = null;
+            if (typeof updateActiveVfoHighlight === 'function') updateActiveVfoHighlight();
 
             updateScanButtonsUI();
             window.updateAudioMute();
@@ -1238,18 +1310,23 @@
                 renderPresets();
             }
 
-            if (!keepChannel && !isSwitchingMode && originalProfile && uiSocket && uiSocket.readyState === WebSocket.OPEN) {
-                currentFreq = originalProfile.freq;
-                currentMod = originalProfile.mod;
-                setChannelName(originalProfile.name);
+            if (!keepChannel && !isSwitchingMode) {
+                if (typeof setActiveVfoPreset === 'function') setActiveVfoPreset(null);
+                if (originalProfile && uiSocket && uiSocket.readyState === WebSocket.OPEN) {
+                    currentFreq = originalProfile.freq;
+                    currentMod = originalProfile.mod;
+                    setChannelName(originalProfile.name);
 
-                let modToggle = document.getElementById('vfo-mod-toggle');
-                if (modToggle) modToggle.innerText = currentMod;
-                renderVFO();
+                    let modToggle = document.getElementById('vfo-mod-toggle');
+                    if (modToggle) modToggle.innerText = currentMod;
+                    renderVFO();
 
-                window.location.hash = `#freq=${currentFreq}&mod=${currentMod}&name=${encodeURIComponent(originalProfile.name)}`;
-                if (typeof window.applyProfileSettings === 'function') window.applyProfileSettings();
-                if (typeof window.syncRadioProfile === 'function') window.syncRadioProfile();
+                    window.location.hash = `#freq=${currentFreq}&mod=${currentMod}&name=${encodeURIComponent(originalProfile.name)}`;
+                    if (typeof window.applyProfileSettings === 'function') window.applyProfileSettings();
+                    if (typeof window.syncRadioProfile === 'function') window.syncRadioProfile();
+                }
+            } else if (keepChannel) {
+                if (typeof updateActiveVfoHighlight === 'function') updateActiveVfoHighlight();
             }
         };
 
@@ -1265,6 +1342,7 @@
 
             activeTabIdx = tabIdx;
             try { localStorage.setItem('quansheng_active_tab', activeTabIdx); } catch(e) {}
+            if (typeof setActiveVfoPreset === 'function') setActiveVfoPreset(`t${tabIdx}-p${presetIdx}`);
 
             currentFreq = preset.freq;
             currentMod = preset.mod ? preset.mod.toUpperCase() : "FM";
@@ -1339,9 +1417,10 @@
 
                 sortedList.forEach(preset => {
                     let elemKey = `t${tIdx}-p${preset.origIdx}`;
+                    let isVfoActive = (!scanActive && activeVfoPresetKey === elemKey);
                     let div = document.createElement('div');
                     div.id = `preset-item-${elemKey}`;
-                    div.className = `preset-item ${preset.scan ? 'scan-enabled' : 'not-scanned'} scan-all-item`;
+                    div.className = `preset-item ${preset.scan ? 'scan-enabled' : 'not-scanned'} scan-all-item ${isVfoActive ? 'active-vfo' : ''}`;
                     div.setAttribute('data-tab', tIdx);
                     div.setAttribute('data-preset', preset.origIdx);
                     div.setAttribute('data-freq', preset.freq);
@@ -1440,9 +1519,33 @@
             sysStatsText.innerHTML = `CPU: ${sysCpu}% | Temp: ${sysTemp}°C | Ping: <span style="color:${pingColor}; font-weight:bold;">${sysPing}</span>`;
         }
 
+        window.CAT_CLIENT_ID = window.CAT_CLIENT_ID || (function() {
+            try {
+                let id = sessionStorage.getItem('cat_client_id');
+                if (!id) {
+                    id = 'c_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now().toString(36);
+                    sessionStorage.setItem('cat_client_id', id);
+                }
+                return id;
+            } catch(e) {
+                return 'c_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now().toString(36);
+            }
+        })();
+
+        window.takeoverSession = function() {
+            if (uiSocket && uiSocket.readyState === WebSocket.OPEN) {
+                let btn = document.getElementById('su-takeover-btn');
+                if (btn) {
+                    btn.disabled = true;
+                    btn.innerText = "Przejmowanie sesji...";
+                }
+                uiSocket.send(JSON.stringify({ cmd: "takeover_session" }));
+            }
+        };
+
         function initWebSocket() {
             const wsProto = window.location.protocol === "https:" ? "wss://" : "ws://";
-            const wsUrl = wsProto + window.location.host + "/tx-ws/";
+            const wsUrl = wsProto + window.location.host + "/tx-ws/?client_id=" + encodeURIComponent(window.CAT_CLIENT_ID || "");
             uiSocket = new WebSocket(wsUrl);
             const statusSpan = document.getElementById('ws-status');
 
@@ -1479,17 +1582,76 @@
                     try {
                         let msg = JSON.parse(event.data);
                         
-                        if (msg.cmd === "sync_db" && msg.db) {
-                            if (msg.owrx && msg.owrx.enabled) {
-                                let owrxBtn = document.getElementById('btn-owrx');
-                                if (owrxBtn) {
-                                    let port = msg.owrx.port || 8074;
-                                    owrxBtn.href = `${window.location.protocol}//${window.location.hostname}:${port}/`;
-                                    owrxBtn.style.display = 'inline-flex';
+                        if (msg.cmd === "session_status") {
+                            let modal = document.getElementById('single-user-modal');
+                            if (msg.mode === "single_user" && msg.is_owner === false) {
+                                let iconEl = document.getElementById('su-modal-icon');
+                                let title = document.getElementById('su-modal-title');
+                                let desc = document.getElementById('su-modal-desc');
+                                let detailsEl = document.getElementById('su-modal-details');
+                                let ipEl = document.getElementById('su-modal-ip');
+                                let devEl = document.getElementById('su-modal-device');
+                                let timeEl = document.getElementById('su-modal-time');
+                                let btn = document.getElementById('su-takeover-btn');
+                                if (btn) {
+                                    btn.disabled = false;
                                 }
+
+                                if (msg.radio_free) {
+                                    if (iconEl) iconEl.innerText = "📻✨";
+                                    if (title) {
+                                        title.innerText = "Radio jest wolne";
+                                        title.style.color = "#4CAF50";
+                                    }
+                                    if (desc) desc.innerText = "Nikt obecnie nie korzysta z radia. W tle aktywne są usługi APRS i DTMF. Kliknij poniżej, aby przejąć kontrolę:";
+                                    if (detailsEl) detailsEl.style.display = 'none';
+                                    if (btn) {
+                                        btn.innerText = "⚡ Przejmij kontrolę nad radiem";
+                                        btn.style.background = "#4CAF50";
+                                    }
+                                } else if (msg.taken_over_by) {
+                                    let owner = msg.taken_over_by || {};
+                                    if (iconEl) iconEl.innerText = "📻🔒";
+                                    if (title) {
+                                        title.innerText = "Twoja sesja została przejęta!";
+                                        title.style.color = "#ff9800";
+                                    }
+                                    if (desc) desc.innerText = "Inny operator przejął wyłączną kontrolę nad radiem. Możesz przejąć sesję z powrotem:";
+                                    if (detailsEl) detailsEl.style.display = 'block';
+                                    if (ipEl) ipEl.innerText = owner.ip || "Nieznany";
+                                    if (devEl) devEl.innerText = owner.client_info || "Nieznane urządzenie";
+                                    if (timeEl) timeEl.innerText = owner.connected_at || "--:--:--";
+                                    if (btn) {
+                                        btn.innerText = "⚡ Przejmij kontrolę z powrotem";
+                                        btn.style.background = "#ff9800";
+                                    }
+                                } else {
+                                    let owner = msg.current_owner || {};
+                                    if (iconEl) iconEl.innerText = "📻🔒";
+                                    if (title) {
+                                        title.innerText = "Radio jest obecnie używane";
+                                        title.style.color = "#ff9800";
+                                    }
+                                    if (desc) desc.innerText = "Włączony jest tryb pojedynczego użytkownika. Inny operator ma obecnie kontrolę nad radiem:";
+                                    if (detailsEl) detailsEl.style.display = 'block';
+                                    if (ipEl) ipEl.innerText = owner.ip || "Nieznany";
+                                    if (devEl) devEl.innerText = owner.client_info || "Nieznane urządzenie";
+                                    if (timeEl) timeEl.innerText = owner.connected_at || "--:--:--";
+                                    if (btn) {
+                                        btn.innerText = "⚡ Przejmij sesję";
+                                        btn.style.background = "#ff9800";
+                                    }
+                                }
+
+                                if (modal) modal.style.display = 'flex';
                             } else {
-                                let owrxBtn = document.getElementById('btn-owrx');
-                                if (owrxBtn) owrxBtn.style.display = 'none';
+                                if (modal) modal.style.display = 'none';
+                            }
+                        } else if (msg.cmd === "sync_db" && msg.db) {
+                            if (msg.owrx && typeof msg.owrx.enabled === 'boolean') {
+                                updateOwrxButton(msg.owrx);
+                            } else {
+                                updateOwrxButton();
                             }
                             if (msg.callsign) {
                                 currentCallsign = msg.callsign;
@@ -1727,16 +1889,29 @@
             const container = document.getElementById('history-tiles'); container.innerHTML = '';
             if (!historyArray || historyArray.length === 0) return;
 
-            historyArray.forEach(hist => {
+            historyArray.slice(0, 6).forEach(hist => {
                 let btn = document.createElement('div'); btn.className = 'history-tile';
                 let presetMatch = null;
+                let matchTabIdx = -1;
+                let matchPresetIdx = -1;
+
                 let curP = getActivePresets();
-                presetMatch = curP.find(p => p.freq === hist.freq);
-                if (!presetMatch && tabs) {
-                    for (let t of tabs) {
-                        if (t.presets) {
-                            presetMatch = t.presets.find(p => p.freq === hist.freq);
-                            if (presetMatch) break;
+                let curIdx = curP.findIndex(p => p.freq === hist.freq);
+                if (curIdx !== -1) {
+                    presetMatch = curP[curIdx];
+                    matchTabIdx = activeTabIdx;
+                    matchPresetIdx = curIdx;
+                } else if (tabs) {
+                    for (let tIdx = 0; tIdx < tabs.length; tIdx++) {
+                        let t = tabs[tIdx];
+                        if (t && t.presets) {
+                            let pIdx = t.presets.findIndex(p => p.freq === hist.freq);
+                            if (pIdx !== -1) {
+                                presetMatch = t.presets[pIdx];
+                                matchTabIdx = tIdx;
+                                matchPresetIdx = pIdx;
+                                break;
+                            }
                         }
                     }
                 }
@@ -1747,6 +1922,21 @@
                 btn.onclick = () => {
                     if (typeof window.updateAudioMute === 'function') {
                         window.updateAudioMute();
+                    }
+
+                    if (presetMatch && matchTabIdx !== -1 && matchPresetIdx !== -1) {
+                        if (activeTabIdx !== matchTabIdx) {
+                            activeTabIdx = matchTabIdx;
+                            renderTabs();
+                            renderPresets();
+                        }
+                        if (typeof setActiveVfoPreset === 'function') {
+                            setActiveVfoPreset(`t${matchTabIdx}-p${matchPresetIdx}`);
+                        }
+                    } else {
+                        if (typeof setActiveVfoPreset === 'function') {
+                            setActiveVfoPreset(null);
+                        }
                     }
 
                     currentFreq = hist.freq; currentMod = hist.mod ? hist.mod.toUpperCase() : "FM";
@@ -1796,18 +1986,21 @@
 
             presets.forEach((preset, index) => {
                 let elemKey = `t${activeTabIdx}-p${index}`;
+                let vfoChannelName = document.getElementById('vfo-channel-name') ? document.getElementById('vfo-channel-name').innerText.trim() : '';
+                let isVfoActive = (!scanActive && (activeVfoPresetKey === elemKey || (!activeVfoPresetKey && vfoChannelName && vfoChannelName !== "VFO / MANUAL" && vfoChannelName === preset.name.toUpperCase() && preset.freq === currentFreq)));
+                if (isVfoActive) {
+                    activeVfoPresetKey = elemKey;
+                }
                 let div = document.createElement('div');
                 div.id = `preset-item-${index}`; 
-                div.className = `preset-item ${preset.scan ? 'scan-enabled' : ''}`;
+                div.className = `preset-item ${preset.scan ? 'scan-enabled' : ''} ${isVfoActive ? 'active-vfo' : ''}`;
                 div.style.order = preset.scan ? "0" : "1";
                 div.setAttribute('data-tab', activeTabIdx);
                 div.setAttribute('data-preset', index);
                 div.setAttribute('data-freq', preset.freq);
                 div.setAttribute('data-key', elemKey);
                 div.onclick = (e) => {
-                    if (scanActive) {
-                        window.selectChannelAndStopScan(activeTabIdx, index);
-                    }
+                    handlePresetClick(activeTabIdx, index, e);
                 };
                 
                 let shiftTxt = "Simplex";
@@ -1868,6 +2061,10 @@
             let preset = presets[index];
             if (!preset) return;
 
+            if (typeof setActiveVfoPreset === 'function') {
+                setActiveVfoPreset(`t${activeTabIdx}-p${index}`);
+            }
+
             if (typeof window.updateAudioMute === 'function') {
                 window.updateAudioMute();
             }
@@ -1927,6 +2124,9 @@
             presets = getActivePresets();
             if (!presets[index]) return;
             if (confirm(`Are you sure you want to delete channel "${presets[index].name}"?`)) {
+                if (activeVfoPresetKey === `t${activeTabIdx}-p${index}`) {
+                    if (typeof setActiveVfoPreset === 'function') setActiveVfoPreset(null);
+                }
                 presets.splice(index, 1);
                 renderTabs();
                 renderPresets();
@@ -2112,18 +2312,64 @@
             }
         });
 
-        let rxAnalyser = null;
+        let spectrumDataArray = null;
         function drawRxSpectrum() {
             requestAnimationFrame(drawRxSpectrum);
             let canvas = document.getElementById('vfo-spectrum');
             if (!canvas) return;
             let ctx = canvas.getContext('2d');
             
-            if (canvas.width !== canvas.offsetWidth) canvas.width = canvas.offsetWidth;
-            if (canvas.height !== canvas.offsetHeight) canvas.height = canvas.offsetHeight;
+            let w = canvas.offsetWidth || 300;
+            let h = canvas.offsetHeight || 100;
+            if (canvas.width !== w) canvas.width = w;
+            if (canvas.height !== h) canvas.height = h;
 
-            if (!rxAnalyser && window.audioContext && window.webrtcPC) {}
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.clearRect(0, 0, w, h);
+
+            let analyser = window.rxAnalyserNode || window.rxAnalyser;
+            let isMuted = (typeof rxMuted !== 'undefined' && rxMuted) || (typeof isAudioMuted !== 'undefined' && isAudioMuted);
+            
+            if (!analyser || isMuted) {
+                return;
+            }
+
+            if (!spectrumDataArray || spectrumDataArray.length !== analyser.frequencyBinCount) {
+                spectrumDataArray = new Uint8Array(analyser.frequencyBinCount);
+            }
+
+            analyser.getByteFrequencyData(spectrumDataArray);
+
+            let binCount = Math.min(spectrumDataArray.length, 42);
+            if (binCount === 0) return;
+
+            let barWidth = w / binCount;
+            let gap = Math.max(1, barWidth * 0.25);
+            let actualBarWidth = Math.max(2, barWidth - gap);
+
+            let gradient = ctx.createLinearGradient(0, h, 0, 0);
+            gradient.addColorStop(0, 'rgba(33, 150, 243, 0.04)');
+            gradient.addColorStop(0.4, 'rgba(33, 150, 243, 0.18)');
+            gradient.addColorStop(0.8, 'rgba(0, 229, 255, 0.40)');
+            gradient.addColorStop(1, 'rgba(255, 152, 0, 0.65)');
+
+            ctx.fillStyle = gradient;
+
+            for (let i = 0; i < binCount; i++) {
+                let val = spectrumDataArray[i] / 255.0;
+                if (val < 0.02) continue;
+
+                let barHeight = val * h * 0.85;
+                let x = i * barWidth + gap / 2;
+                let y = h - barHeight;
+
+                ctx.beginPath();
+                if (typeof ctx.roundRect === 'function') {
+                    ctx.roundRect(x, y, actualBarWidth, barHeight, [3, 3, 0, 0]);
+                } else {
+                    ctx.rect(x, y, actualBarWidth, barHeight);
+                }
+                ctx.fill();
+            }
         }
 
         window.onload = () => {
@@ -2157,6 +2403,7 @@
                 delayContainer.style.display = (act === 'pause') ? 'block' : 'none';
             }
 
+            updateOwrxButton();
             renderVFO(); renderTabs(); renderPresets(); initWebSocket(); drawRxSpectrum();
             setInterval(updateVfoStatusIndicators, 500);
         };

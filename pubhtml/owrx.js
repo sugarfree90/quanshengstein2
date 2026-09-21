@@ -48,6 +48,72 @@ const _backendOrigin = (function() {
 let txSocket = null;
 let isTransmitting = false;
 let isConnected = false;
+window.isSessionOwner = true;
+
+window.CAT_CLIENT_ID = window.CAT_CLIENT_ID || (function() {
+    try {
+        let id = sessionStorage.getItem('cat_client_id');
+        if (!id) {
+            id = 'c_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now().toString(36);
+            sessionStorage.setItem('cat_client_id', id);
+        }
+        return id;
+    } catch(e) {
+        return 'c_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now().toString(36);
+    }
+})();
+
+function createSessionModal() {
+    if (document.getElementById('owrx-session-modal') || document.getElementById('single-user-modal')) return;
+    let modal = document.createElement('div');
+    modal.id = 'owrx-session-modal';
+    Object.assign(modal.style, {
+        position: 'fixed',
+        top: '0',
+        left: '0',
+        width: '100%',
+        height: '100%',
+        backgroundColor: 'rgba(0, 0, 0, 0.8)',
+        backdropFilter: 'blur(5px)',
+        display: 'none',
+        justifyContent: 'center',
+        alignItems: 'center',
+        zIndex: '100000',
+        fontFamily: 'Segoe UI, Tahoma, Geneva, Verdana, sans-serif'
+    });
+
+    modal.innerHTML = `
+        <div style="background:#1e1e1e; border: 2px solid #ff9800; border-radius: 12px; padding: 24px; max-width: 440px; width: 90%; box-shadow: 0 10px 30px rgba(0,0,0,0.8); color: #fff; text-align: center; box-sizing: border-box;">
+            <div style="font-size: 38px; margin-bottom: 8px;">📻🔒</div>
+            <h3 id="owrx-modal-title" style="margin: 0 0 12px 0; color: #ff9800; font-size: 18px;">Radio jest obecnie używane</h3>
+            <p id="owrx-modal-desc" style="font-size: 13px; color: #ccc; margin: 0 0 16px 0; line-height: 1.5;">
+                Włączony jest tryb pojedynczego użytkownika. Inny operator ma obecnie kontrolę nad radiem:
+            </p>
+            <div id="owrx-modal-info-box" style="background: rgba(0,0,0,0.5); border: 1px solid #444; border-radius: 8px; padding: 12px; text-align: left; font-size: 13px; margin-bottom: 20px;">
+                <div style="margin-bottom: 6px;"><strong style="color: #aaa;">Adres IP:</strong> <span id="owrx-modal-ip" style="color: #4CAF50; font-family: monospace; font-weight: bold;">--</span></div>
+                <div style="margin-bottom: 6px;"><strong style="color: #aaa;">Urządzenie:</strong> <span id="owrx-modal-device" style="color: #2196F3;">--</span></div>
+                <div><strong style="color: #aaa;">Połączony od:</strong> <span id="owrx-modal-time" style="color: #eee; font-family: monospace;">--</span></div>
+            </div>
+            <div style="display: flex; gap: 10px; justify-content: center;">
+                <button id="owrx-modal-takeover-btn" onclick="window.takeoverOwrxSession()" style="background: #ff9800; color: #000; border: none; font-weight: bold; font-size: 14px; padding: 12px 20px; border-radius: 6px; cursor: pointer; transition: background 0.2s; box-shadow: 0 4px 10px rgba(255,152,0,0.3);">
+                    ⚡ Przejmij kontrolę nad radiem
+                </button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+}
+
+window.takeoverOwrxSession = function() {
+    if (txSocket && txSocket.readyState === WebSocket.OPEN) {
+        let btn = document.getElementById('owrx-modal-takeover-btn');
+        if (btn) {
+            btn.disabled = true;
+            btn.innerText = "Przejmowanie sesji...";
+        }
+        txSocket.send(JSON.stringify({ cmd: "takeover_session" }));
+    }
+};
 
 let audioContext;
 let micStream;
@@ -62,7 +128,7 @@ window.isDraining = false;
 window.pttAudioSyncEnabled = (localStorage.getItem('ptt_audio_sync') !== "0"); // default enabled
 let drainInterval = null;
 let drainStartTime = 0;
-let drainTotalDuration = 600;
+let drainTotalDuration = 100;
 
 function flushRemainingTxAudio() {
     if (txPcmBuffer && txPcmBuffer.length > 0 && opusEncoder) {
@@ -93,7 +159,7 @@ function startDrainAnimation(exactDurationMs) {
     if (exactDurationMs && exactDurationMs > 0) {
         drainTotalDuration = exactDurationMs;
     } else {
-        drainTotalDuration = Math.max(drainTotalDuration, 500);
+        drainTotalDuration = Math.max(drainTotalDuration, 30);
     }
     drainStartTime = performance.now();
 
@@ -263,6 +329,7 @@ function updateConnectionState(state) {
     if (!isConnected) {
         container.style.backgroundColor = "#555";
         btn.style.cursor = "not-allowed";
+        btn.style.pointerEvents = "auto";
         btnTxt.innerText = "No connection to radio (Offline)";
         if (progressBar) { progressBar.style.display = "none"; progressBar.style.width = "0%"; }
         
@@ -271,7 +338,18 @@ function updateConnectionState(state) {
             let stickyBtn = document.getElementById('ptt-sticky');
             if(stickyBtn) { stickyBtn.style.backgroundColor = "rgba(0,0,0,0.2)"; stickyBtn.innerHTML = "🔓"; }
         }
+    } else if (window.isSessionOwner === false) {
+        container.style.backgroundColor = "#444";
+        btn.style.cursor = "not-allowed";
+        btn.style.pointerEvents = "none";
+        if (window.radioFree) {
+            btnTxt.innerText = "Radio wolne (przejmij kontrolę)";
+        } else {
+            btnTxt.innerText = "Radio w użyciu przez innego operatora";
+        }
+        if (progressBar) { progressBar.style.display = "none"; progressBar.style.width = "0%"; }
     } else {
+        btn.style.pointerEvents = "auto";
         if (window.isDraining) {
             container.style.backgroundColor = "#c62828";
             btn.style.cursor = "pointer";
@@ -295,8 +373,18 @@ function updateConnectionState(state) {
     }
 }
 
+function getAudioContext() {
+    if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({
+            sampleRate: 48000,
+            latencyHint: 'interactive'
+        });
+    }
+    return audioContext;
+}
+
 async function initRxPlayer() {
-    if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+    audioContext = getAudioContext();
     await loadAudioWorklets();
 }
 
@@ -472,9 +560,7 @@ window.setRxMuted = function(muted) {
 function setupRxAudioPipeline(stream) {
     rxStream = stream;
 
-    if (!audioContext) {
-        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
-    }
+    audioContext = getAudioContext();
     if (audioContext.state === 'suspended') {
         audioContext.resume().catch(()=>{});
     }
@@ -491,27 +577,39 @@ function setupRxAudioPipeline(stream) {
         }
         rxSourceNode = audioContext.createMediaStreamSource(stream);
         window.rxSourceNode = rxSourceNode;
+        
         if (!rxGainNode) {
             rxGainNode = audioContext.createGain();
             window.rxGainNode = rxGainNode;
+            rxGainNode.gain.setValueAtTime(rxCurrentGain, audioContext.currentTime);
             rxGainNode.connect(audioContext.destination);
         }
+
         rxSourceNode.connect(rxGainNode);
-        remoteAudioEl.muted = true;
+
+        // Connect AnalyserNode for live VFO audio spectrum visualizer
+        if (!window.rxAnalyserNode) {
+            try {
+                let analyser = audioContext.createAnalyser();
+                analyser.fftSize = 128; // 64 frequency bins
+                analyser.smoothingTimeConstant = 0.8;
+                window.rxAnalyserNode = analyser;
+                window.rxAnalyser = analyser;
+            } catch(e) {}
+        }
+        if (window.rxAnalyserNode) {
+            try {
+                rxSourceNode.connect(window.rxAnalyserNode);
+            } catch(e) {}
+        }
+
         window.applyRxGain();
     } catch(err) {
-        console.warn("[WebRTC] createMediaStreamSource error, fallback to remoteAudioEl:", err);
-        rxSourceNode = null;
-        window.rxSourceNode = null;
-        remoteAudioEl.muted = rxMuted;
-        remoteAudioEl.volume = Math.min(1.0, rxCurrentGain);
+        console.error("[WebAudio RX] Failed to connect WebRTC stream to GainNode:", err);
     }
 }
 
 async function startWebRTCConnection() {
-    if (!rxAudioEnabled) return; // Guard against double execution
-    
-    console.log("[WebRTC] Server confirmed audio system ready! Connecting...");
     let rxLabel = document.getElementById('rx-audio-label');
     if (rxLabel) {
         rxLabel.style.backgroundColor = "#4CAF50";
@@ -523,6 +621,16 @@ async function startWebRTCConnection() {
     
     webrtcPC.ontrack = (event) => {
         console.log("[WebRTC] Received audio stream. Playing...");
+        if (event.receiver) {
+            try {
+                if ('playoutDelayHint' in event.receiver) {
+                    event.receiver.playoutDelayHint = 0;
+                }
+                if ('jitterBufferTarget' in event.receiver) {
+                    event.receiver.jitterBufferTarget = 0;
+                }
+            } catch(e) {}
+        }
         let stream = (event.streams && event.streams[0]) ? event.streams[0] : new MediaStream([event.track]);
         setupRxAudioPipeline(stream);
     };
@@ -577,7 +685,7 @@ window.toggleRxAudio = async function(state) {
     let rxLabel = document.getElementById('rx-audio-label');
 
     if (state) {
-        if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+        audioContext = getAudioContext();
         if (audioContext && audioContext.state === 'suspended') await audioContext.resume().catch(()=>{});
 
         if(rxLabel) {
@@ -885,7 +993,7 @@ async function initMicrophone() {
         if (ms && ms.value) constraints.audio.deviceId = { exact: ms.value };
         micStream = await navigator.mediaDevices.getUserMedia(constraints);
         
-        if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+        audioContext = getAudioContext();
         if (audioContext.state === 'suspended') await audioContext.resume();
         
         await loadAudioWorklets();
@@ -902,7 +1010,18 @@ async function initMicrophone() {
                 },
                 error: (e) => console.error("[Opus TX] Encoder error:", e)
             });
-            opusEncoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1, bitrate: 32000 });
+            opusEncoder.configure({
+                codec: 'opus',
+                sampleRate: 48000,
+                numberOfChannels: 1,
+                bitrate: 32000,
+                latencyMode: 'realtime',
+                opus: {
+                    application: 'voip',
+                    signal: 'voice',
+                    frameDuration: 20000
+                }
+            });
         }
 
         window.micSourceNode = audioContext.createMediaStreamSource(micStream);
@@ -1178,6 +1297,12 @@ function createPttButton() {
     btn.addEventListener("mouseleave", handleLeave);
     btn.addEventListener("touchstart", handleDown, {passive: false});
     btn.addEventListener("touchend", handleUp, {passive: false});
+    btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        if (!micReady && window.isSessionOwner !== false && isConnected) {
+            setTxState(true);
+        }
+    });
 
     stickyBtn.addEventListener("click", (e) => {
         e.preventDefault();
@@ -1283,7 +1408,7 @@ setInterval(() => { let profile = getActiveProfile(); if (profile && profile.fre
 let heartbeatInterval; 
 
 function initTxPlugin() {
-    const wsUrl = _backendOrigin.wsProto + _backendOrigin.host + "/tx-ws/";
+    const wsUrl = _backendOrigin.wsProto + _backendOrigin.host + "/tx-ws/?client_id=" + encodeURIComponent(window.CAT_CLIENT_ID);
     console.log("[owrx.js] Connecting CAT WebSocket to:", wsUrl);
     try {
         txSocket = new WebSocket(wsUrl);
@@ -1366,6 +1491,78 @@ function initTxPlugin() {
                     updateDrainProgress(msg.remaining_ms, msg.total_ms);
                 } else if (msg.cmd === "tx_drain_done" || msg.status === "tx_off") {
                     finishTxStop();
+                } else if (msg.cmd === "session_status") {
+                    let hasHostModal = !!document.getElementById('single-user-modal');
+                    let modal = document.getElementById('owrx-session-modal');
+                    if (!hasHostModal && !modal && msg.mode === "single_user" && msg.is_owner === false) {
+                        createSessionModal();
+                        modal = document.getElementById('owrx-session-modal');
+                    }
+
+                    window.isSessionOwner = (msg.is_owner !== false);
+                    window.radioFree = !!msg.radio_free;
+
+                    if (msg.mode === "single_user" && msg.is_owner === false) {
+                        let owner = msg.current_owner || msg.taken_over_by || {};
+                        if (!hasHostModal && modal) {
+                            let title = document.getElementById('owrx-modal-title');
+                            let desc = document.getElementById('owrx-modal-desc');
+                            let infoBox = document.getElementById('owrx-modal-info-box');
+                            let ipEl = document.getElementById('owrx-modal-ip');
+                            let devEl = document.getElementById('owrx-modal-device');
+                            let timeEl = document.getElementById('owrx-modal-time');
+                            let btn = document.getElementById('owrx-modal-takeover-btn');
+                            if (btn) {
+                                btn.disabled = false;
+                            }
+
+                            if (msg.radio_free) {
+                                if (title) {
+                                    title.innerText = "Radio jest wolne";
+                                    title.style.color = "#4CAF50";
+                                }
+                                if (desc) desc.innerText = "Nikt obecnie nie korzysta z radia. W tle aktywne są usługi APRS i DTMF. Kliknij poniżej, aby przejąć kontrolę:";
+                                if (infoBox) infoBox.style.display = 'none';
+                                if (btn) {
+                                    btn.innerText = "⚡ Przejmij kontrolę nad radiem";
+                                    btn.style.background = "#4CAF50";
+                                }
+                            } else if (msg.taken_over_by) {
+                                if (title) {
+                                    title.innerText = "Twoja sesja została przejęta!";
+                                    title.style.color = "#ff9800";
+                                }
+                                if (desc) desc.innerText = "Inny operator przejął wyłączną kontrolę nad radiem. Możesz przejąć sesję z powrotem:";
+                                if (infoBox) infoBox.style.display = 'block';
+                                if (ipEl) ipEl.innerText = owner.ip || "Nieznany";
+                                if (devEl) devEl.innerText = owner.client_info || "Nieznane urządzenie";
+                                if (timeEl) timeEl.innerText = owner.connected_at || "--:--:--";
+                                if (btn) {
+                                    btn.innerText = "⚡ Przejmij kontrolę z powrotem";
+                                    btn.style.background = "#ff9800";
+                                }
+                            } else {
+                                if (title) {
+                                    title.innerText = "Radio jest obecnie używane";
+                                    title.style.color = "#ff9800";
+                                }
+                                if (desc) desc.innerText = "Włączony jest tryb pojedynczego użytkownika. Inny operator ma obecnie kontrolę nad radiem:";
+                                if (infoBox) infoBox.style.display = 'block';
+                                if (ipEl) ipEl.innerText = owner.ip || "Nieznany";
+                                if (devEl) devEl.innerText = owner.client_info || "Nieznane urządzenie";
+                                if (timeEl) timeEl.innerText = owner.connected_at || "--:--:--";
+                                if (btn) {
+                                    btn.innerText = "⚡ Przejmij kontrolę nad radiem";
+                                    btn.style.background = "#ff9800";
+                                }
+                            }
+
+                            modal.style.display = 'flex';
+                        }
+                    } else {
+                        if (modal) modal.style.display = 'none';
+                    }
+                    updateConnectionState(isConnected);
                 } else if (msg.cmd === "sync_db" && msg.db) {
                     if (typeof msg.db.ptt_audio_sync !== 'undefined') {
                         window.pttAudioSyncEnabled = !!msg.db.ptt_audio_sync;

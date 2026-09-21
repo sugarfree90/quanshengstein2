@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,6 +61,9 @@ type Config struct {
 	HttpsPort                    int    `json:"https_port"`
 	CertFile                     string `json:"cert_file"`
 	KeyFile                      string `json:"key_file"`
+	SingleUserMode               bool   `json:"single_user_mode"`
+	OnlyLAN                      bool   `json:"only_lan"`
+	STUNServer                   string `json:"stun_server"`
 	UseDirewolf                  bool   `json:"use_direwolf"`
 	AprsFreq                     int    `json:"aprs_freq"`
 	DtmfFreq                     int    `json:"dtmf_freq"`
@@ -107,6 +111,9 @@ var defaultCfg = Config{
 	HttpsPort:                   8443,
 	CertFile:                    "cert.pem",
 	KeyFile:                     "key.pem",
+	SingleUserMode:              false,
+	OnlyLAN:                     false,
+	STUNServer:                  "stun:stun.l.google.com:19302",
 	UseDirewolf:                 true,
 	AprsFreq:                    144800000,
 	DtmfFreq:                    145550000,
@@ -115,8 +122,8 @@ var defaultCfg = Config{
 	DirewolfCmd:                 "direwolf -c direwolf.conf -t 0",
 	AudioRxDevice:               "1,0",
 	AudioTxDevice:               "1,0",
-	RxAudioCmd:                  "ffmpeg -hide_banner -loglevel error -f alsa -thread_queue_size 1024 -ar 48000 -ac 1 -i {DEVICE} -c:a libopus -b:a 48k -vbr off -application voip -frame_duration 20 -f rtp rtp://127.0.0.1:4000",
-	TxAudioCmd:                  "ffmpeg -hide_banner -loglevel error -f ogg -i pipe:0 -f alsa {DEVICE}",
+	RxAudioCmd:                  "ffmpeg -hide_banner -loglevel error -flags low_delay -fflags nobuffer -probesize 32 -analyzeduration 0 -f alsa -thread_queue_size 64 -ar 48000 -ac 1 -i {DEVICE} -c:a libopus -b:a 48k -vbr off -application voip -frame_duration 20 -flush_packets 1 -f rtp rtp://127.0.0.1:4000",
+	TxAudioCmd:                  "ffmpeg -hide_banner -loglevel error -flags low_delay -fflags nobuffer -probesize 32 -analyzeduration 0 -f ogg -i pipe:0 -f s16le -ac 1 -ar 48000 - | aplay -D {DEVICE} -f S16_LE -c 1 -r 48000 --buffer-time=20000 --period-time=5000 -q",
 	AudioRTPPort:                4000,
 	TotLimitSeconds:             3600,
 	MQTTAPREnabled:              true,
@@ -194,7 +201,7 @@ func getTxAudioCmd() string {
 		}
 		return cmd
 	}
-	return fmt.Sprintf("ffmpeg -hide_banner -loglevel error -f ogg -i pipe:0 -f alsa %s", txDev)
+	return fmt.Sprintf("ffmpeg -hide_banner -loglevel error -flags low_delay -fflags nobuffer -probesize 32 -analyzeduration 0 -f ogg -i pipe:0 -f s16le -ac 1 -ar 48000 - | aplay -D %s -f S16_LE -c 1 -r 48000 --buffer-time=20000 --period-time=5000 -q", txDev)
 }
 
 func getDirewolfCmd() string {
@@ -353,6 +360,13 @@ type RadioState struct {
 
 var radioState RadioState
 
+type ClientSessionInfo struct {
+	ClientID    string `json:"client_id"`
+	IP          string `json:"ip"`
+	ClientInfo  string `json:"client_info"`
+	ConnectedAt string `json:"connected_at"`
+}
+
 // =====================================================================
 // --- GLOBAL STATE AND MANAGEMENT VARIABLES ---
 // =====================================================================
@@ -371,6 +385,14 @@ var (
 	upgrader    = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return true },
 	}
+
+	// Single user session management
+	sessionLock       sync.RWMutex
+	activeClientID    string
+	activeSessionInfo ClientSessionInfo
+	clientSessions    = make(map[string]ClientSessionInfo)
+	clientConnections = make(map[*websocket.Conn]string)
+	clientConnCounts  = make(map[string]int)
 
 	// WebRTC Pion
 	webrtcAPI           *webrtc.API
@@ -395,7 +417,7 @@ var (
 	hwScanLock         sync.RWMutex
 
 	// Audio transmission pipeline (TX)
-	txAudioQueue   = make(chan []byte, 100)
+	txAudioQueue   = make(chan []byte, 6)
 	txAudioProcess *exec.Cmd
 	txAudioStdin   io.WriteCloser
 	txAudioSeq     uint32
@@ -649,6 +671,10 @@ func loadAppConfig() Config {
 		cfg.LogMaxBackups = defaultCfg.LogMaxBackups
 		modified = true
 	}
+	if cfg.STUNServer == "" && !cfg.OnlyLAN {
+		cfg.STUNServer = defaultCfg.STUNServer
+		modified = true
+	}
 
 	if modified && !bytes.Contains(data, []byte("//")) && !bytes.Contains(data, []byte("/*")) {
 		data, err := json.MarshalIndent(cfg, "", "    ")
@@ -658,6 +684,63 @@ func loadAppConfig() Config {
 	}
 
 	return cfg
+}
+
+var (
+	shmDBPath     string
+	dbFlushTimer  *time.Timer
+	dbFlushLock   sync.Mutex
+	dbPendingData []byte
+)
+
+func getShmDBPath() string {
+	if shmDBPath != "" {
+		return shmDBPath
+	}
+	shmDir := "/dev/shm"
+	if fi, err := os.Stat(shmDir); err == nil && fi.IsDir() {
+		shmDBPath = filepath.Join(shmDir, "radio_db.json")
+	} else {
+		fallback := filepath.Join(os.TempDir(), "quansheng_shm")
+		_ = os.MkdirAll(fallback, 0755)
+		shmDBPath = filepath.Join(fallback, "radio_db.json")
+	}
+	return shmDBPath
+}
+
+func flushDBToDisk() {
+	dbFlushLock.Lock()
+	if dbFlushTimer != nil {
+		dbFlushTimer.Stop()
+		dbFlushTimer = nil
+	}
+	data := dbPendingData
+	dbPendingData = nil
+	dbFlushLock.Unlock()
+
+	if len(data) == 0 {
+		return
+	}
+
+	tmpFile := dbFile + ".tmp"
+	f, err := os.OpenFile(tmpFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		log.Printf("[DB] Error creating temp DB file %s: %v", tmpFile, err)
+		return
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		log.Printf("[DB] Error writing temp DB file: %v", err)
+		return
+	}
+	_ = f.Sync()
+	_ = f.Close()
+
+	if err := os.Rename(tmpFile, dbFile); err != nil {
+		log.Printf("[DB] Error atomically renaming %s to %s: %v", tmpFile, dbFile, err)
+	} else {
+		log.Printf("[DB] Atomically flushed radio database to %s (%d bytes)", dbFile, len(data))
+	}
 }
 
 func loadDB() RadioDB {
@@ -678,19 +761,43 @@ func loadDB() RadioDB {
 		PTTAudioSync: true,
 	}
 
-	if _, err := os.Stat(dbFile); os.IsNotExist(err) {
-		return defaultDB
+	var data []byte
+	var err error
+
+	if _, statErr := os.Stat(dbFile); statErr == nil {
+		data, err = os.ReadFile(dbFile)
 	}
 
-	data, err := os.ReadFile(dbFile)
-	if err != nil {
+	// Fallback to /dev/shm if dbFile is missing or empty
+	if len(data) == 0 || err != nil {
+		shmPath := getShmDBPath()
+		if shmData, shmErr := os.ReadFile(shmPath); shmErr == nil && len(shmData) > 0 {
+			log.Printf("[DB] Recovering radio database from RAM fallback: %s", shmPath)
+			data = shmData
+			err = nil
+		}
+	}
+
+	if len(data) == 0 || err != nil {
 		return defaultDB
 	}
 
 	var db RadioDB
 	if err := json.Unmarshal(data, &db); err != nil {
+		// If unmarshal fails on primary, check shm as well
+		shmPath := getShmDBPath()
+		if shmData, shmErr := os.ReadFile(shmPath); shmErr == nil {
+			if errShm := json.Unmarshal(shmData, &db); errShm == nil {
+				log.Printf("[DB] Primary %s was corrupt; recovered valid DB from %s", dbFile, shmPath)
+				return db
+			}
+		}
 		return defaultDB
 	}
+
+	// Also ensure /dev/shm has the latest copy on startup
+	shmPath := getShmDBPath()
+	_ = os.WriteFile(shmPath, data, 0644)
 
 	if db.History == nil {
 		db.History = make([]HistoryEntry, 0)
@@ -738,9 +845,24 @@ func saveDB() {
 	data, err := json.MarshalIndent(radioDB, "", "    ")
 	dbLock.Unlock()
 
-	if err == nil {
-		_ = os.WriteFile(dbFile, data, 0644)
+	if err != nil {
+		return
 	}
+
+	// 1. Immediately write to RAM (/dev/shm) to protect microSD/flash on SBCs
+	shmPath := getShmDBPath()
+	_ = os.WriteFile(shmPath, data, 0644)
+
+	// 2. Schedule debounced atomic write to permanent storage (dbFile) after 5 seconds
+	dbFlushLock.Lock()
+	dbPendingData = data
+	if dbFlushTimer != nil {
+		dbFlushTimer.Stop()
+	}
+	dbFlushTimer = time.AfterFunc(5*time.Second, func() {
+		flushDBToDisk()
+	})
+	dbFlushLock.Unlock()
 }
 
 // =====================================================================
@@ -1157,13 +1279,26 @@ func startTxAudioProcess() {
 	}
 
 	txCmdStr := getTxAudioCmd()
-	cmdParts := strings.Fields(txCmdStr)
-	if len(cmdParts) == 0 {
+	if strings.TrimSpace(txCmdStr) == "" {
 		return
 	}
 	log.Printf("[TX Audio] Starting ALSA audio transmitter: %s", txCmdStr)
 
-	cmd := exec.Command(cmdParts[0], cmdParts[1:]...)
+	var cmd *exec.Cmd
+	if strings.Contains(txCmdStr, "|") || strings.Contains(txCmdStr, ">") || strings.Contains(txCmdStr, "<") {
+		if runtime.GOOS == "windows" {
+			cmd = exec.Command("cmd.exe", "/c", txCmdStr)
+		} else {
+			cmd = exec.Command("sh", "-c", txCmdStr)
+		}
+	} else {
+		cmdParts := strings.Fields(txCmdStr)
+		if len(cmdParts) == 0 {
+			return
+		}
+		cmd = exec.Command(cmdParts[0], cmdParts[1:]...)
+	}
+
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		log.Printf("[TX Audio] StdinPipe error: %v", err)
@@ -1199,15 +1334,23 @@ func stopTxAudioProcess() {
 	if txAudioStdin != nil {
 		// Send EOS (End Of Stream) page
 		pEOS := makeOggPage(0x04, txAudioGranule, txAudioSerial, txAudioSeq, nil)
-		txAudioStdin.Write(pEOS)
-		txAudioStdin.Close()
+		_, _ = txAudioStdin.Write(pEOS)
+		_ = txAudioStdin.Close()
 		txAudioStdin = nil
 	}
 
 	if txAudioProcess != nil && txAudioProcess.Process != nil {
-		_ = txAudioProcess.Process.Kill()
-		_ = txAudioProcess.Wait()
+		proc := txAudioProcess
 		txAudioProcess = nil
+		go func(p *exec.Cmd) {
+			done := make(chan error, 1)
+			go func() { done <- p.Wait() }()
+			select {
+			case <-done:
+			case <-time.After(120 * time.Millisecond):
+				_ = p.Process.Kill()
+			}
+		}(proc)
 	}
 }
 
@@ -1336,33 +1479,46 @@ func governorWatcher() {
 		clientCount := len(clients)
 		clientsLock.RUnlock()
 
+		configLock.RLock()
+		isSU := appCfg.SingleUserMode
+		configLock.RUnlock()
+
+		var hasActiveOperator bool
+		if isSU {
+			sessionLock.RLock()
+			hasActiveOperator = (activeClientID != "")
+			sessionLock.RUnlock()
+		} else {
+			hasActiveOperator = (clientCount > 0)
+		}
+
 		governorLock.Lock()
 		curMode := currentAudioMode
 		governorLock.Unlock()
 
-		if clientCount > 0 {
+		if hasActiveOperator {
 			zeroClientsSince = time.Time{}
 			hwScanLock.Lock()
 			if hwScanIsBackground {
 				hwScanActive = false
 				hwScanPaused = false
 				hwScanIsBackground = false
-				log.Printf("[Governor] Detected web client (%d) -> Stopping background services scan", clientCount)
+				log.Printf("[Governor] Active operator present -> Stopping background services scan")
 			}
 			hwScanLock.Unlock()
 
 			if curMode != "VOICE" {
-				log.Printf("[Governor] Detected active web clients (%d) -> Switching to VOICE mode", clientCount)
+				log.Printf("[Governor] Active operator present -> Switching to VOICE mode")
 				governorSwitch("VOICE")
 			}
 		} else {
-			// No web clients connected
+			// No active operator (0 clients, or in single_user_mode radio is idle/free)
 			if appCfg.UseDirewolf {
 				if curMode == "VOICE" {
 					if zeroClientsSince.IsZero() {
 						zeroClientsSince = time.Now()
 					} else if time.Since(zeroClientsSince) > 3*time.Second {
-						log.Printf("[Governor] No web clients for 3s -> Returning to APRS and background services")
+						log.Printf("[Governor] No active operator for 3s -> Returning to APRS and background services")
 						governorSwitch("APRS")
 						applyBackgroundServices()
 						zeroClientsSince = time.Time{}
@@ -1458,11 +1614,22 @@ func tuneRadioBackground(freq int) {
 }
 
 func applyBackgroundServices() {
-	clientsLock.RLock()
-	clientCount := len(clients)
-	clientsLock.RUnlock()
+	configLock.RLock()
+	isSU := appCfg.SingleUserMode
+	configLock.RUnlock()
 
-	if clientCount > 0 {
+	var hasActiveOperator bool
+	if isSU {
+		sessionLock.RLock()
+		hasActiveOperator = (activeClientID != "")
+		sessionLock.RUnlock()
+	} else {
+		clientsLock.RLock()
+		hasActiveOperator = (len(clients) > 0)
+		clientsLock.RUnlock()
+	}
+
+	if hasActiveOperator {
 		return
 	}
 
@@ -1652,10 +1819,20 @@ func rxAudioListener() {
 }
 
 func createPeerConnection() (*webrtc.PeerConnection, error) {
+	configLock.RLock()
+	onlyLAN := appCfg.OnlyLAN
+	stunServer := strings.TrimSpace(appCfg.STUNServer)
+	configLock.RUnlock()
+
+	var iceServers []webrtc.ICEServer
+	if !onlyLAN && stunServer != "" {
+		iceServers = append(iceServers, webrtc.ICEServer{
+			URLs: []string{stunServer},
+		})
+	}
+
 	config := webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{
-			{URLs: []string{"stun:stun.l.google.com:19302"}},
-		},
+		ICEServers: iceServers,
 	}
 
 	pc, err := webrtcAPI.NewPeerConnection(config)
@@ -1770,6 +1947,44 @@ func handleWHEP(w http.ResponseWriter, r *http.Request) {
 // =====================================================================
 // --- ZADANIA POBOCZNE (TELEMETRIA, SKANER, S-METER, TOT) ---
 // =====================================================================
+
+func buildSyncDBMessage() []byte {
+	configLock.RLock()
+	curCfg := appCfg
+	configLock.RUnlock()
+
+	dbLock.RLock()
+	defer dbLock.RUnlock()
+
+	msg, _ := json.Marshal(map[string]interface{}{
+		"cmd":              "sync_db",
+		"db":               radioDB,
+		"callsign":         curCfg.Callsign,
+		"single_user_mode": curCfg.SingleUserMode,
+		"mqtt": map[string]interface{}{
+			"aprs_enabled":  curCfg.MQTTAPREnabled,
+			"dtmf_enabled":  curCfg.MQTTDTMFEnabled,
+			"enabled":       curCfg.MQTTAPREnabled,
+			"broker":        curCfg.MQTTBroker,
+			"aprs_topic":    curCfg.MQTTAPRSTopic,
+			"topic_prefix":  curCfg.MQTTAPRSTopic,
+			"dtmf_topic":    curCfg.MQTTDTMFTopic,
+			"dtmf_freq":     curCfg.DtmfFreq,
+			"bg_scan_ticks": curCfg.BackgroundServicesScanTicks,
+			"client_id":     curCfg.MQTTClientID,
+			"username":      curCfg.MQTTUsername,
+			"retain":        curCfg.MQTTRetain,
+			"qos":           curCfg.MQTTQoS,
+			"connected":     mqttManager.IsConnected(),
+		},
+		"owrx": map[string]interface{}{
+			"enabled": curCfg.OwrxProxyEnabled,
+			"port":    curCfg.OwrxProxyPort,
+			"url":     curCfg.OwrxBackendURL,
+		},
+	})
+	return msg
+}
 
 func dispatchToClients(msg []byte) {
 	clientsLock.RLock()
@@ -2192,6 +2407,122 @@ func finalizeTxStop(data map[string]interface{}) {
 // --- KONTROLER WEBSOCKET ---
 // =====================================================================
 
+func extractClientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		ips := strings.Split(xff, ",")
+		ip := strings.TrimSpace(ips[0])
+		if ip != "" {
+			return ip
+		}
+	}
+	if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
+		return strings.TrimSpace(xrip)
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+func formatClientInfo(ua string, referer string) string {
+	uaLower := strings.ToLower(ua)
+	osName := "Nieznany system"
+	if strings.Contains(uaLower, "windows nt 10.0") || strings.Contains(uaLower, "windows nt 11.0") || strings.Contains(uaLower, "windows") {
+		osName = "Windows"
+	} else if strings.Contains(uaLower, "android") {
+		osName = "Android"
+	} else if strings.Contains(uaLower, "iphone") || strings.Contains(uaLower, "ipad") || strings.Contains(uaLower, "ios") {
+		osName = "iOS"
+	} else if strings.Contains(uaLower, "macintosh") || strings.Contains(uaLower, "mac os") {
+		osName = "macOS"
+	} else if strings.Contains(uaLower, "linux") {
+		osName = "Linux"
+	}
+
+	browserName := "Przeglądarka"
+	if strings.Contains(uaLower, "edg/") {
+		browserName = "Edge"
+	} else if strings.Contains(uaLower, "chrome/") || strings.Contains(uaLower, "crios/") {
+		browserName = "Chrome"
+	} else if strings.Contains(uaLower, "firefox/") || strings.Contains(uaLower, "fxios/") {
+		browserName = "Firefox"
+	} else if strings.Contains(uaLower, "safari/") && !strings.Contains(uaLower, "chrome") {
+		browserName = "Safari"
+	} else if strings.Contains(uaLower, "opera") || strings.Contains(uaLower, "opr/") {
+		browserName = "Opera"
+	}
+
+	appType := "Web"
+	refLower := strings.ToLower(referer)
+	if strings.Contains(refLower, "openwebrx") || strings.Contains(refLower, ":8074") {
+		appType = "OpenWebRX"
+	} else if strings.Contains(refLower, "radio.html") || strings.Contains(refLower, ":8081") {
+		appType = "Radio UI"
+	}
+
+	if ua == "" {
+		return fmt.Sprintf("Nieznane urządzenie (%s)", appType)
+	}
+	return fmt.Sprintf("%s - %s (%s)", osName, browserName, appType)
+}
+
+func broadcastSessionStatus(takenOverBy *ClientSessionInfo) {
+	configLock.RLock()
+	isSingleUser := appCfg.SingleUserMode
+	configLock.RUnlock()
+
+	sessionLock.RLock()
+	curActiveID := activeClientID
+	curOwnerInfo := activeSessionInfo
+
+	type clientUpdate struct {
+		ws      *websocket.Conn
+		isOwner bool
+	}
+	updates := make([]clientUpdate, 0, len(clientConnections))
+	for wsConn, cID := range clientConnections {
+		updates = append(updates, clientUpdate{
+			ws:      wsConn,
+			isOwner: !isSingleUser || (cID == curActiveID),
+		})
+	}
+	sessionLock.RUnlock()
+
+	mode := "multi_user"
+	if isSingleUser {
+		mode = "single_user"
+	}
+
+	for _, cu := range updates {
+		payload := map[string]interface{}{
+			"cmd":      "session_status",
+			"mode":     mode,
+			"is_owner": cu.isOwner,
+		}
+		if isSingleUser && !cu.isOwner {
+			if curActiveID == "" {
+				payload["radio_free"] = true
+			} else {
+				payload["current_owner"] = curOwnerInfo
+				if takenOverBy != nil {
+					payload["taken_over_by"] = *takenOverBy
+				}
+			}
+		}
+		msg, _ := json.Marshal(payload)
+		clientsLock.RLock()
+		ch, ok := clients[cu.ws]
+		clientsLock.RUnlock()
+		if ok {
+			select {
+			case ch <- msg:
+			default:
+			}
+		}
+	}
+}
+
 func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -2199,6 +2530,11 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer ws.Close()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[WS Panic Recovery] Recovered from panic: %v\nStack:\n%s", r, string(debug.Stack()))
+		}
+	}()
 
 	var writeMu sync.Mutex
 	safeWrite := func(data []byte) error {
@@ -2214,15 +2550,72 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	count := len(clients)
 	clientsLock.Unlock()
 
-	log.Printf("[WS] Web client connected: %s (Active sessions: %d)", remoteAddr, count)
+	clientID := r.URL.Query().Get("client_id")
+	if clientID == "" {
+		clientID = fmt.Sprintf("conn_%p", ws)
+	}
 
-	// Immediately activate VOICE mode for web client
-	governorLock.Lock()
-	if currentAudioMode != "VOICE" {
-		governorLock.Unlock()
-		go governorSwitch("VOICE")
+	clientIP := extractClientIP(r)
+	clientInfo := formatClientInfo(r.UserAgent(), r.Header.Get("Referer"))
+	connTime := time.Now().Format("15:04:05")
+
+	sessInfo := ClientSessionInfo{
+		ClientID:    clientID,
+		IP:          clientIP,
+		ClientInfo:  clientInfo,
+		ConnectedAt: connTime,
+	}
+
+	sessionLock.Lock()
+	clientConnections[ws] = clientID
+	clientConnCounts[clientID]++
+	if _, exists := clientSessions[clientID]; !exists {
+		clientSessions[clientID] = sessInfo
 	} else {
-		governorLock.Unlock()
+		sessInfo = clientSessions[clientID]
+	}
+
+	configLock.RLock()
+	isSingleUser := appCfg.SingleUserMode
+	configLock.RUnlock()
+
+	var isOwner bool
+	var currentOwner ClientSessionInfo
+
+	if !isSingleUser {
+		isOwner = true
+	} else {
+		if activeClientID == "" {
+			if len(clientSessions) == 1 {
+				activeClientID = clientID
+				activeSessionInfo = sessInfo
+				isOwner = true
+				log.Printf("[SingleUser] Session granted to sole client %s (%s, %s)", clientID, sessInfo.IP, sessInfo.ClientInfo)
+			} else {
+				isOwner = false
+				log.Printf("[SingleUser] Client %s (%s) connected in standby (Radio is free/idle)", clientID, sessInfo.IP)
+			}
+		} else if activeClientID == clientID {
+			isOwner = true
+		} else {
+			isOwner = false
+			currentOwner = activeSessionInfo
+			log.Printf("[SingleUser] Client %s (%s) connected in standby (Owner: %s / %s)", clientID, sessInfo.IP, activeClientID, activeSessionInfo.IP)
+		}
+	}
+	sessionLock.Unlock()
+
+	log.Printf("[WS] Web client connected: %s | ID: %s (Active sessions: %d)", remoteAddr, clientID, count)
+
+	// Activate VOICE mode only if this client was granted owner role
+	if isOwner {
+		governorLock.Lock()
+		if currentAudioMode != "VOICE" {
+			governorLock.Unlock()
+			go governorSwitch("VOICE")
+		} else {
+			governorLock.Unlock()
+		}
 	}
 
 	defer func() {
@@ -2234,7 +2627,32 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		remaining := len(clients)
 		clientsLock.Unlock()
 
-		log.Printf("[WS] Web client disconnected: %s (Remaining sessions: %d)", remoteAddr, remaining)
+		log.Printf("[WS] Web client disconnected: %s | ID: %s (Remaining sessions: %d)", remoteAddr, clientID, remaining)
+
+		sessionLock.Lock()
+		cID := clientConnections[ws]
+		delete(clientConnections, ws)
+		var ownerChanged bool
+		if cID != "" {
+			clientConnCounts[cID]--
+			if clientConnCounts[cID] <= 0 {
+				delete(clientConnCounts, cID)
+				delete(clientSessions, cID)
+
+				if activeClientID == cID {
+					log.Printf("[SingleUser] Active owner %s disconnected all connections; radio is now free/idle", cID)
+					activeClientID = ""
+					activeSessionInfo = ClientSessionInfo{}
+					ownerChanged = true
+				}
+			}
+		}
+		sessionLock.Unlock()
+
+		if ownerChanged {
+			broadcastSessionStatus(nil)
+			applyBackgroundServices()
+		}
 
 		txLock.Lock()
 		if txDrainCancel != nil {
@@ -2264,39 +2682,27 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// Sync database on connection
-	configLock.RLock()
-	curCfg := appCfg
-	configLock.RUnlock()
+	_ = safeWrite(buildSyncDBMessage())
 
-	dbLock.RLock()
-	syncMsg, _ := json.Marshal(map[string]interface{}{
-		"cmd":      "sync_db",
-		"db":       radioDB,
-		"callsign": curCfg.Callsign,
-		"mqtt": map[string]interface{}{
-			"aprs_enabled":  curCfg.MQTTAPREnabled,
-			"dtmf_enabled":  curCfg.MQTTDTMFEnabled,
-			"enabled":       curCfg.MQTTAPREnabled,
-			"broker":        curCfg.MQTTBroker,
-			"aprs_topic":    curCfg.MQTTAPRSTopic,
-			"topic_prefix":  curCfg.MQTTAPRSTopic,
-			"dtmf_topic":    curCfg.MQTTDTMFTopic,
-			"dtmf_freq":     curCfg.DtmfFreq,
-			"bg_scan_ticks": curCfg.BackgroundServicesScanTicks,
-			"client_id":     curCfg.MQTTClientID,
-			"username":      curCfg.MQTTUsername,
-			"retain":        curCfg.MQTTRetain,
-			"qos":           curCfg.MQTTQoS,
-			"connected":     mqttManager.IsConnected(),
-		},
-		"owrx": map[string]interface{}{
-			"enabled": curCfg.OwrxProxyEnabled,
-			"port":    curCfg.OwrxProxyPort,
-			"url":     curCfg.OwrxBackendURL,
-		},
-	})
-	dbLock.RUnlock()
-	_ = safeWrite(syncMsg)
+	// Send initial session status
+	statusMode := "multi_user"
+	if isSingleUser {
+		statusMode = "single_user"
+	}
+	initialStatus := map[string]interface{}{
+		"cmd":      "session_status",
+		"mode":     statusMode,
+		"is_owner": isOwner,
+	}
+	if isSingleUser && !isOwner {
+		if activeClientID == "" {
+			initialStatus["radio_free"] = true
+		} else {
+			initialStatus["current_owner"] = currentOwner
+		}
+	}
+	initialStatusBytes, _ := json.Marshal(initialStatus)
+	_ = safeWrite(initialStatusBytes)
 
 	hwScanLock.Lock()
 	scanActive := hwScanActive
@@ -2318,6 +2724,19 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		// Receive binary audio data (Opus or PCM) during TX
 		if msgType == websocket.BinaryMessage {
+			configLock.RLock()
+			isSU := appCfg.SingleUserMode
+			configLock.RUnlock()
+
+			if isSU {
+				sessionLock.RLock()
+				ownerOk := (activeClientID == clientID)
+				sessionLock.RUnlock()
+				if !ownerOk {
+					continue
+				}
+			}
+
 			txLock.Lock()
 			tx := isTransmitting
 			txLock.Unlock()
@@ -2331,6 +2750,20 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 						atomic.AddInt64(&txAudioSamplesReceived, 960)
 					}
 				default:
+					// Drop oldest frame to guarantee real-time audio without creeping delay
+					select {
+					case <-txAudioQueue:
+					default:
+					}
+					select {
+					case txAudioQueue <- msg:
+						if len(msg) > 1000 {
+							atomic.AddInt64(&txAudioSamplesReceived, int64(len(msg)/2))
+						} else {
+							atomic.AddInt64(&txAudioSamplesReceived, 960)
+						}
+					default:
+					}
 				}
 			}
 			continue
@@ -2342,6 +2775,94 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 
 		cmd, _ := data["cmd"].(string)
+
+		switch cmd {
+		case "takeover_session":
+			configLock.RLock()
+			isSU := appCfg.SingleUserMode
+			configLock.RUnlock()
+
+			if !isSU {
+				continue
+			}
+
+			sessionLock.Lock()
+			if activeClientID == clientID {
+				sessionLock.Unlock()
+				continue
+			}
+
+			txLock.Lock()
+			wasTx := isTransmitting
+			if isTransmitting {
+				radio.RxOn()
+				stopTxAudioProcess()
+				isTransmitting = false
+			}
+			if txDrainCancel != nil {
+				close(txDrainCancel)
+				txDrainCancel = nil
+			}
+			isTxDraining = false
+			txLock.Unlock()
+			if wasTx {
+				go publishRadioStatus()
+			}
+
+			sessInfo := clientSessions[clientID]
+			activeClientID = clientID
+			activeSessionInfo = sessInfo
+			log.Printf("[SingleUser] Session taken over by %s (%s, %s)", clientID, sessInfo.IP, sessInfo.ClientInfo)
+			sessionLock.Unlock()
+
+			// Stop background services and ensure VOICE mode
+			hwScanLock.Lock()
+			if hwScanIsBackground {
+				hwScanActive = false
+				hwScanPaused = false
+				hwScanIsBackground = false
+				log.Printf("[SingleUser] Operator took over session -> Stopping background services scan")
+			}
+			hwScanLock.Unlock()
+
+			governorLock.Lock()
+			if currentAudioMode != "VOICE" {
+				governorLock.Unlock()
+				go governorSwitch("VOICE")
+			} else {
+				governorLock.Unlock()
+			}
+
+			broadcastSessionStatus(&sessInfo)
+			continue
+		}
+
+		configLock.RLock()
+		isSU := appCfg.SingleUserMode
+		configLock.RUnlock()
+
+		if isSU {
+			sessionLock.RLock()
+			ownerOk := (activeClientID == clientID)
+			sessionLock.RUnlock()
+
+			if !ownerOk {
+				switch cmd {
+				case "start_tx", "stop_tx", "set_vfo_a", "set_power", "set_mod",
+					"set_ctcss", "set_dcs", "set_monitor", "start_scan", "stop_scan",
+					"resume_scan", "apply_profile", "update_tabs", "add_tab", "del_tab",
+					"move_tab", "rename_tab", "save_preset", "del_preset", "update_presets",
+					"save_scan_config", "save_ptt_audio_sync", "save_mqtt_config",
+					"set_scan_resume_delay", "toggle_scanlist":
+					resp, _ := json.Marshal(map[string]interface{}{
+						"cmd":   "error",
+						"error": "Radio control blocked: session owned by another operator",
+					})
+					_ = safeWrite(resp)
+					continue
+				}
+			}
+		}
 
 		switch cmd {
 		case "get_logs":
@@ -2541,14 +3062,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				}
 				hwScanLock.Unlock()
 
-				dbLock.RLock()
-				res, _ := json.Marshal(map[string]interface{}{
-					"cmd":      "sync_db",
-					"db":       radioDB,
-					"callsign": appCfg.Callsign,
-				})
-				dbLock.RUnlock()
-				dispatchToClients(res)
+				dispatchToClients(buildSyncDBMessage())
 			}
 
 		case "apply_profile":
@@ -2654,14 +3168,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					}
 					hwScanLock.Unlock()
 
-					dbLock.RLock()
-					res, _ := json.Marshal(map[string]interface{}{
-						"cmd":      "sync_db",
-						"db":       radioDB,
-						"callsign": appCfg.Callsign,
-					})
-					dbLock.RUnlock()
-					dispatchToClients(res)
+					dispatchToClients(buildSyncDBMessage())
 				}
 			}
 
@@ -2678,15 +3185,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			})
 			dbLock.Unlock()
 			saveDB()
-
-			dbLock.RLock()
-			res, _ := json.Marshal(map[string]interface{}{
-				"cmd":      "sync_db",
-				"db":       radioDB,
-				"callsign": appCfg.Callsign,
-			})
-			dbLock.RUnlock()
-			dispatchToClients(res)
+			dispatchToClients(buildSyncDBMessage())
 
 		case "del_tab":
 			if tFloat, ok := data["tab"].(float64); ok {
@@ -2703,14 +3202,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					}
 					hwScanLock.Unlock()
 
-					dbLock.RLock()
-					res, _ := json.Marshal(map[string]interface{}{
-						"cmd":      "sync_db",
-						"db":       radioDB,
-						"callsign": appCfg.Callsign,
-					})
-					dbLock.RUnlock()
-					dispatchToClients(res)
+					dispatchToClients(buildSyncDBMessage())
 				} else {
 					dbLock.Unlock()
 				}
@@ -2732,14 +3224,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					dbLock.Unlock()
 					saveDB()
 
-					dbLock.RLock()
-					res, _ := json.Marshal(map[string]interface{}{
-						"cmd":      "sync_db",
-						"db":       radioDB,
-						"callsign": appCfg.Callsign,
-					})
-					dbLock.RUnlock()
-					dispatchToClients(res)
+					dispatchToClients(buildSyncDBMessage())
 				} else {
 					dbLock.Unlock()
 				}
@@ -2757,14 +3242,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 						dbLock.Unlock()
 						saveDB()
 
-						dbLock.RLock()
-						res, _ := json.Marshal(map[string]interface{}{
-							"cmd":      "sync_db",
-							"db":       radioDB,
-							"callsign": appCfg.Callsign,
-						})
-						dbLock.RUnlock()
-						dispatchToClients(res)
+						dispatchToClients(buildSyncDBMessage())
 					} else {
 						dbLock.Unlock()
 					}
@@ -2791,15 +3269,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					}
 					dbLock.Unlock()
 					saveDB()
-
-					dbLock.RLock()
-					res, _ := json.Marshal(map[string]interface{}{
-						"cmd":      "sync_db",
-						"db":       radioDB,
-						"callsign": appCfg.Callsign,
-					})
-					dbLock.RUnlock()
-					dispatchToClients(res)
+					dispatchToClients(buildSyncDBMessage())
 				}
 			}
 
@@ -2817,14 +3287,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 						dbLock.Unlock()
 						saveDB()
 
-						dbLock.RLock()
-						res, _ := json.Marshal(map[string]interface{}{
-							"cmd":      "sync_db",
-							"db":       radioDB,
-							"callsign": appCfg.Callsign,
-						})
-						dbLock.RUnlock()
-						dispatchToClients(res)
+						dispatchToClients(buildSyncDBMessage())
 					} else {
 						dbLock.Unlock()
 					}
@@ -2860,14 +3323,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					}
 					hwScanLock.Unlock()
 
-					dbLock.RLock()
-					res, _ := json.Marshal(map[string]interface{}{
-						"cmd":      "sync_db",
-						"db":       radioDB,
-						"callsign": appCfg.Callsign,
-					})
-					dbLock.RUnlock()
-					dispatchToClients(res)
+					dispatchToClients(buildSyncDBMessage())
 				}
 			}
 
@@ -2892,14 +3348,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 					log.Printf("[Scanner] Saved scanner configuration to radio_db.json (ticks=%d, action=%s, delay=%.1fs)", newCfg.Ticks, newCfg.Action, newCfg.Delay)
 
-					dbLock.RLock()
-					res, _ := json.Marshal(map[string]interface{}{
-						"cmd":      "sync_db",
-						"db":       radioDB,
-						"callsign": appCfg.Callsign,
-					})
-					dbLock.RUnlock()
-					dispatchToClients(res)
+					dispatchToClients(buildSyncDBMessage())
 				}
 			}
 
@@ -2911,14 +3360,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				saveDB()
 				log.Printf("[RadioDB] Saved ptt_audio_sync = %v to radio_db.json", enabled)
 
-				dbLock.RLock()
-				res, _ := json.Marshal(map[string]interface{}{
-					"cmd":      "sync_db",
-					"db":       radioDB,
-					"callsign": appCfg.Callsign,
-				})
-				dbLock.RUnlock()
-				dispatchToClients(res)
+				dispatchToClients(buildSyncDBMessage())
 			}
 
 		case "save_mqtt_config":
@@ -3083,9 +3525,15 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			atomic.StoreInt64(&txAudioSamplesReceived, 0)
 
-			freq := int(data["freq"].(float64))
+			rawFreq, ok := data["freq"].(float64)
+			if !ok || rawFreq <= 0 {
+				log.Printf("[WS] start_tx rejected: invalid or missing freq in request: %v", data["freq"])
+				_ = safeWrite([]byte(`{"status":"error","message":"Invalid frequency"}`))
+				break
+			}
+			freq := int(rawFreq)
 			baseFreq := freq
-			if bf, ok := data["base_freq"].(float64); ok {
+			if bf, ok := data["base_freq"].(float64); ok && bf > 0 {
 				baseFreq = int(bf)
 			}
 			modStr, _ := data["mod"].(string)
@@ -3134,36 +3582,52 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			radioDB.History = append([]HistoryEntry{histEntry}, newHistory...)
-			if len(radioDB.History) > 5 {
-				radioDB.History = radioDB.History[:5]
+			if len(radioDB.History) > 6 {
+				radioDB.History = radioDB.History[:6]
 			}
 			dbLock.Unlock()
 			saveDB()
 
-			dbLock.RLock()
-			syncDbMsg, _ := json.Marshal(map[string]interface{}{
-				"cmd":      "sync_db",
-				"db":       radioDB,
-				"callsign": appCfg.Callsign,
-			})
-			dbLock.RUnlock()
-			dispatchToClients(syncDbMsg)
+			dispatchToClients(buildSyncDBMessage())
 
-			// Konfiguracja radia pod TX
-			radio.SetVFOA(freq)
-			time.Sleep(50 * time.Millisecond)
-			if ctcss > 0 {
-				radio.SetCTCSS(ctcss)
-			} else if dcs > 0 {
-				radio.SetDCS(dcs)
-			} else {
-				radio.TonesOff()
+			// Konfiguracja radia pod TX: sprawdzamy aktualny stan, aby nie tracić 300 ms na niepotrzebne komendy CAT
+			stateLock.RLock()
+			curFreq := radioState.Freq
+			curMod := radioState.Mod
+			curPwr := radioState.Pwr
+			curCtcss := radioState.Ctcss
+			curDcs := radioState.Dcs
+			stateLock.RUnlock()
+
+			needFreq := (curFreq != freq)
+			needTones := (curCtcss != ctcss || curDcs != dcs)
+			needMod := (curMod != modStr)
+			needPwr := (curPwr != pwr)
+
+			if needFreq || needTones || needMod || needPwr {
+				if needFreq {
+					radio.SetVFOA(freq)
+				}
+				if needTones {
+					if ctcss > 0 {
+						radio.SetCTCSS(ctcss)
+					} else if dcs > 0 {
+						radio.SetDCS(dcs)
+					} else {
+						radio.TonesOff()
+					}
+				}
+				if needMod {
+					radio.SetMod(modID)
+				}
+				if needPwr {
+					radio.SetPower(pwr)
+				}
+				// Minimalne 15 ms stabilizacji PLL tylko wtedy, gdy częstotliwość uległa zmianie (np. shift przemiennika)
+				if needFreq {
+					time.Sleep(15 * time.Millisecond)
+				}
 			}
-			time.Sleep(50 * time.Millisecond)
-			radio.SetMod(modID)
-			time.Sleep(50 * time.Millisecond)
-			radio.SetPower(pwr)
-			time.Sleep(150 * time.Millisecond)
 
 			// Clear audio queue
 			for len(txAudioQueue) > 0 {
@@ -3181,6 +3645,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			stateLock.Lock()
 			radioState.Freq = freq
+			radioState.Mod = modStr
 			radioState.Pwr = pwr
 			radioState.Ctcss = ctcss
 			radioState.Dcs = dcs
@@ -3219,7 +3684,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				isTransmitting = false
 				txLock.Unlock()
 
-				time.Sleep(150 * time.Millisecond)
+				time.Sleep(15 * time.Millisecond)
 				stopTxAudioProcess()
 				radio.RxOn()
 				finalizeTxStop(data)
@@ -3240,13 +3705,14 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			elapsed := time.Since(txStartTime)
 			queueDuration := time.Duration(len(txAudioQueue)) * 20 * time.Millisecond
 
-			// Pipeline audio duration waiting to be played (queue + pipe + ALSA buffer)
-			remaining := totalDuration - elapsed + 150*time.Millisecond
-			if remaining < queueDuration+150*time.Millisecond {
-				remaining = queueDuration + 150*time.Millisecond
+			// Pipeline audio duration waiting to be played (queue + ALSA low-delay buffer)
+			const alsaBufferMargin = 30 * time.Millisecond
+			remaining := totalDuration - elapsed + alsaBufferMargin
+			if remaining < queueDuration+alsaBufferMargin {
+				remaining = queueDuration + alsaBufferMargin
 			}
-			if remaining < 150*time.Millisecond {
-				remaining = 150 * time.Millisecond
+			if remaining < alsaBufferMargin {
+				remaining = alsaBufferMargin
 			}
 
 			isTxDraining = true
@@ -3530,6 +3996,7 @@ func main() {
 	go func() {
 		<-sigChan
 		log.Println("\n[System] Shutting down catWebservice...")
+		flushDBToDisk()
 		mqttManager.Disconnect()
 		if radio != nil {
 			radio.RxOn()
