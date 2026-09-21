@@ -1550,6 +1550,7 @@
             const statusSpan = document.getElementById('ws-status');
 
             uiSocket.onopen = () => {
+                window.isServerShuttingDown = false;
                 statusSpan.innerText = "Connected"; statusSpan.style.color = "#4CAF50";
                 if (pingInterval) clearInterval(pingInterval);
                 pingInterval = setInterval(() => {
@@ -1582,6 +1583,14 @@
                     try {
                         let msg = JSON.parse(event.data);
                         
+                        if (msg.cmd === "server_shutdown") {
+                            window.isServerShuttingDown = true;
+                            statusSpan.innerText = "Server restarting...";
+                            statusSpan.style.color = "#ff9800";
+                            document.getElementById('sys-stats-text').innerText = "Server restarting...";
+                            return;
+                        }
+
                         if (msg.cmd === "session_status") {
                             let modal = document.getElementById('single-user-modal');
                             if (msg.mode === "single_user" && msg.is_owner === false) {
@@ -1647,6 +1656,31 @@
                             } else {
                                 if (modal) modal.style.display = 'none';
                             }
+                        } else if (msg.cmd === "radio_state") {
+                            if (msg.freq && msg.freq > 0) {
+                                currentFreq = msg.freq;
+                            }
+                            if (msg.mod) {
+                                currentMod = msg.mod.toUpperCase();
+                                let modToggle = document.getElementById('vfo-mod-toggle');
+                                if (modToggle) modToggle.innerText = currentMod;
+                            }
+                            if (typeof msg.ctcss !== 'undefined' && document.getElementById('tx-ctcss')) {
+                                document.getElementById('tx-ctcss').value = msg.ctcss;
+                            }
+                            if (typeof msg.dcs !== 'undefined' && document.getElementById('tx-dcs')) {
+                                document.getElementById('tx-dcs').value = msg.dcs;
+                            }
+                            if (typeof msg.shift_dir !== 'undefined' && document.getElementById('tx-off-dir')) {
+                                document.getElementById('tx-off-dir').value = msg.shift_dir;
+                            }
+                            if (typeof msg.shift_val !== 'undefined' && document.getElementById('tx-off-val')) {
+                                document.getElementById('tx-off-val').value = msg.shift_val;
+                            }
+                            if (typeof updateVfoStatusIndicators === 'function') {
+                                updateVfoStatusIndicators();
+                            }
+                            renderVFO();
                         } else if (msg.cmd === "sync_db" && msg.db) {
                             if (msg.owrx && typeof msg.owrx.enabled === 'boolean') {
                                 updateOwrxButton(msg.owrx);
@@ -1877,11 +1911,22 @@
                 if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
                 sysPing = "--";
                 sysPingMs = null;
-                statusSpan.innerText = "Disconnected - retrying..."; statusSpan.style.color = "#f44336";
-                document.getElementById('sys-stats-text').innerText = "Reconnecting...";
-                let csEl = document.getElementById('header-callsign');
-                if (csEl) csEl.innerText = "";
-                setTimeout(initWebSocket, 3000);
+                if (window.isServerShuttingDown) {
+                    statusSpan.innerText = "Server restarting - retrying in 3s...";
+                    statusSpan.style.color = "#ff9800";
+                    document.getElementById('sys-stats-text').innerText = "Restarting...";
+                    setTimeout(() => {
+                        window.isServerShuttingDown = false;
+                        initWebSocket();
+                    }, 3000);
+                } else {
+                    statusSpan.innerText = "Disconnected - retrying..."; 
+                    statusSpan.style.color = "#f44336";
+                    document.getElementById('sys-stats-text').innerText = "Reconnecting...";
+                    let csEl = document.getElementById('header-callsign');
+                    if (csEl) csEl.innerText = "";
+                    setTimeout(initWebSocket, 3000);
+                }
             };
         }
 

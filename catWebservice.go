@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	crand "crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -78,6 +79,8 @@ type Config struct {
 	TxAudioCmd                   string `json:"tx_audio_cmd"`
 	AudioRTPPort                 int    `json:"audio_rtp_port"`
 	TotLimitSeconds              int    `json:"tot_limit_seconds"`
+	PttSyncDelayMs               int    `json:"ptt_sync_delay_ms"`
+	TxPrewarmed                  bool   `json:"tx_prewarmed"`
 	MQTTAPREnabled               bool   `json:"mqtt_aprs_enabled"`
 	MQTTEnabled                  bool   `json:"mqtt_enabled,omitempty"` // backward compatibility
 	MQTTDTMFEnabled              bool   `json:"mqtt_dtmf_enabled"`
@@ -123,9 +126,11 @@ var defaultCfg = Config{
 	AudioRxDevice:               "1,0",
 	AudioTxDevice:               "1,0",
 	RxAudioCmd:                  "ffmpeg -hide_banner -loglevel error -flags low_delay -fflags nobuffer -probesize 32 -analyzeduration 0 -f alsa -thread_queue_size 64 -ar 48000 -ac 1 -i {DEVICE} -c:a libopus -b:a 48k -vbr off -application voip -frame_duration 20 -flush_packets 1 -f rtp rtp://127.0.0.1:4000",
-	TxAudioCmd:                  "ffmpeg -hide_banner -loglevel error -flags low_delay -fflags nobuffer -probesize 32 -analyzeduration 0 -f ogg -i pipe:0 -f s16le -ac 1 -ar 48000 - | aplay -D {DEVICE} -f S16_LE -c 1 -r 48000 --buffer-time=20000 --period-time=5000 -q",
+	TxAudioCmd:                  "ffmpeg -hide_banner -loglevel error -flags low_delay -fflags nobuffer -probesize 1024 -analyzeduration 0 -flush_packets 1 -f ogg -i pipe:0 -f s16le -ac 1 -ar 48000 - | aplay -D {DEVICE} -f S16_LE -c 1 -r 48000 --buffer-time=50000 -q",
 	AudioRTPPort:                4000,
 	TotLimitSeconds:             3600,
+	PttSyncDelayMs:              120,
+	TxPrewarmed:                 true,
 	MQTTAPREnabled:              true,
 	MQTTDTMFEnabled:             true,
 	MQTTDTMFTopic:               "dtmf",
@@ -201,7 +206,7 @@ func getTxAudioCmd() string {
 		}
 		return cmd
 	}
-	return fmt.Sprintf("ffmpeg -hide_banner -loglevel error -flags low_delay -fflags nobuffer -probesize 32 -analyzeduration 0 -f ogg -i pipe:0 -f s16le -ac 1 -ar 48000 - | aplay -D %s -f S16_LE -c 1 -r 48000 --buffer-time=20000 --period-time=5000 -q", txDev)
+	return fmt.Sprintf("ffmpeg -hide_banner -loglevel error -flags low_delay -fflags nobuffer -probesize 1024 -analyzeduration 0 -flush_packets 1 -f ogg -i pipe:0 -f s16le -ac 1 -ar 48000 - | aplay -D %s -f S16_LE -c 1 -r 48000 --buffer-time=50000 -q", txDev)
 }
 
 func getDirewolfCmd() string {
@@ -373,6 +378,8 @@ type ClientSessionInfo struct {
 
 var (
 	isTransmitting         bool
+	isTxStarting           bool
+	txStartAborted         bool
 	isTxDraining           bool
 	txDrainCancel          chan struct{}
 	txAudioSamplesReceived int64
@@ -402,7 +409,9 @@ var (
 
 	// Governor
 	currentAudioMode string
+	targetAudioMode  string
 	governorLock     sync.Mutex
+	governorSwitchMu sync.Mutex
 	direwolfProc     *exec.Cmd
 	rxAudioProc      *exec.Cmd
 
@@ -427,7 +436,20 @@ var (
 	// Squelch state tracking for MQTT (active only in browser mode)
 	squelchLock     sync.RWMutex
 	lastSquelchOpen bool
+
+	// Graceful shutdown context
+	shutdownCtx, shutdownCancel = context.WithCancel(context.Background())
 )
+
+// sleepWithShutdown sleeps for duration d or returns false immediately if shutdown was triggered.
+func sleepWithShutdown(d time.Duration) bool {
+	select {
+	case <-shutdownCtx.Done():
+		return false
+	case <-time.After(d):
+		return true
+	}
+}
 
 // isBrowserMode returns true if at least one web client is connected and the radio is in VOICE mode.
 // In APRS or background services mode, squelch events are ignored to prevent MQTT flooding.
@@ -906,6 +928,16 @@ func (c *QuanshengCAT) Connect() bool {
 	return true
 }
 
+func (c *QuanshengCAT) Close() {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if c.port != nil {
+		_ = c.port.Close()
+		c.port = nil
+		log.Printf("[CAT] Closed serial port %s cleanly.", c.portName)
+	}
+}
+
 func (c *QuanshengCAT) extractDTMFReports() {
 	for {
 		idx := bytes.Index(c.rxBuf, []byte("RD"))
@@ -1264,6 +1296,51 @@ func makeOpusTags() []byte {
 	return tags
 }
 
+func getOpusSamples(pkt []byte) int {
+	if len(pkt) == 0 {
+		return 480
+	}
+	toc := pkt[0]
+	config := (toc >> 3) & 0x1f
+	// RFC 6716 Opus samples per frame at 48kHz
+	var samplesTable = [32]int{
+		480, 960, 1920, 2880, // 0..3: SILK NB/MB/WB 10,20,40,60ms
+		480, 960, 1920, 2880, // 4..7: SILK MB 10,20,40,60ms
+		480, 960, 1920, 2880, // 8..11: SILK WB 10,20,40,60ms
+		480, 960,             // 12..13: Hybrid SWB 10,20ms
+		480, 960,             // 14..15: Hybrid FB 10,20ms
+		120, 240, 480, 960,   // 16..19: CELT NB 2.5,5,10,20ms
+		120, 240, 480, 960,   // 20..23: CELT WB 2.5,5,10,20ms
+		120, 240, 480, 960,   // 24..27: CELT SWB 2.5,5,10,20ms
+		120, 240, 480, 960,   // 28..31: CELT FB 2.5,5,10,20ms
+	}
+	frameSize := samplesTable[config]
+	frameCode := toc & 0x03
+	switch frameCode {
+	case 0:
+		return frameSize
+	case 1, 2:
+		return 2 * frameSize
+	case 3:
+		if len(pkt) > 1 {
+			count := int(pkt[1] & 0x3f)
+			return count * frameSize
+		}
+		return frameSize
+	}
+	return frameSize
+}
+
+func ensureTxAudioProcess() {
+	txLock.Lock()
+	if txAudioProcess != nil && txAudioProcess.Process != nil && txAudioStdin != nil {
+		txLock.Unlock()
+		return
+	}
+	txLock.Unlock()
+	startTxAudioProcess()
+}
+
 func startTxAudioProcess() {
 	txLock.Lock()
 	defer txLock.Unlock()
@@ -1298,6 +1375,8 @@ func startTxAudioProcess() {
 		}
 		cmd = exec.Command(cmdParts[0], cmdParts[1:]...)
 	}
+	cmd.Stderr = os.Stderr
+	setProcessGroup(cmd)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -1323,55 +1402,81 @@ func startTxAudioProcess() {
 	p1 := makeOggPage(0x00, 0, txAudioSerial, txAudioSeq, makeOpusTags())
 	txAudioSeq++
 
-	stdin.Write(p0)
-	stdin.Write(p1)
+	if _, err := stdin.Write(p0); err != nil {
+		log.Printf("[TX Audio] Failed to write Opus BOS page: %v", err)
+	}
+	if _, err := stdin.Write(p1); err != nil {
+		log.Printf("[TX Audio] Failed to write Opus Tags page: %v", err)
+	}
+
+	// Monitor process in background
+	go func(p *exec.Cmd) {
+		err := p.Wait()
+		txLock.Lock()
+		if txAudioProcess == p {
+			log.Printf("[TX Audio] ALSA audio transmitter exited (%v)", err)
+			txAudioProcess = nil
+			txAudioStdin = nil
+		}
+		txLock.Unlock()
+	}(cmd)
 }
 
-func stopTxAudioProcess() {
+func forceStopTxAudioProcess() {
 	txLock.Lock()
-	defer txLock.Unlock()
-
 	if txAudioStdin != nil {
-		// Send EOS (End Of Stream) page
-		pEOS := makeOggPage(0x04, txAudioGranule, txAudioSerial, txAudioSeq, nil)
-		_, _ = txAudioStdin.Write(pEOS)
 		_ = txAudioStdin.Close()
 		txAudioStdin = nil
 	}
+	proc := txAudioProcess
+	txAudioProcess = nil
+	txLock.Unlock()
 
-	if txAudioProcess != nil && txAudioProcess.Process != nil {
-		proc := txAudioProcess
-		txAudioProcess = nil
-		go func(p *exec.Cmd) {
-			done := make(chan error, 1)
-			go func() { done <- p.Wait() }()
-			select {
-			case <-done:
-			case <-time.After(120 * time.Millisecond):
-				_ = p.Process.Kill()
-			}
-		}(proc)
+	if proc != nil && proc.Process != nil {
+		killProcessCleanly(proc)
 	}
 }
 
+func stopTxAudioProcess() {
+	if appCfg.TxPrewarmed {
+		return
+	}
+	forceStopTxAudioProcess()
+}
+
 func txAudioPlayerLoop() {
-	for rawPacket := range txAudioQueue {
-		txLock.Lock()
-		if isTransmitting && txAudioStdin != nil && len(rawPacket) > 0 {
-			// Check whether input is raw PCM16 (from mobile.html) or an Opus packet
-			// An Opus packet from AudioEncoder is usually < 300 bytes
-			if len(rawPacket) > 1000 {
-				// Direct PCM (e.g. mobile.html)
-				_, _ = txAudioStdin.Write(rawPacket)
-			} else {
-				// Opus 20ms frame = 960 samples at 48kHz
-				txAudioGranule += 960
-				page := makeOggPage(0x00, txAudioGranule, txAudioSerial, txAudioSeq, rawPacket)
-				txAudioSeq++
-				_, _ = txAudioStdin.Write(page)
+	for {
+		select {
+		case <-shutdownCtx.Done():
+			return
+		case rawPacket, ok := <-txAudioQueue:
+			if !ok {
+				return
+			}
+			txLock.Lock()
+			stdin := txAudioStdin
+			canPlay := (isTransmitting || isTxDraining || appCfg.TxPrewarmed) && stdin != nil && len(rawPacket) > 0
+			var toWrite []byte
+			if canPlay {
+				// Check whether input is raw PCM16 (from mobile.html) or an Opus packet
+				if len(rawPacket) > 1000 {
+					toWrite = rawPacket
+				} else {
+					samples := getOpusSamples(rawPacket)
+					txAudioGranule += int64(samples)
+					toWrite = makeOggPage(0x00, txAudioGranule, txAudioSerial, txAudioSeq, rawPacket)
+					txAudioSeq++
+				}
+			}
+			txLock.Unlock()
+
+			if len(toWrite) > 0 && stdin != nil {
+				if _, err := stdin.Write(toWrite); err != nil {
+					log.Printf("[TX Audio] Write error to audio transmitter: %v (recovering...)", err)
+					ensureTxAudioProcess()
+				}
 			}
 		}
-		txLock.Unlock()
 	}
 }
 
@@ -1380,6 +1485,9 @@ func txAudioPlayerLoop() {
 // =====================================================================
 
 func governorSwitch(mode string) {
+	governorSwitchMu.Lock()
+	defer governorSwitchMu.Unlock()
+
 	if mode == "APRS" {
 		squelchLock.Lock()
 		wasOpen := lastSquelchOpen
@@ -1391,35 +1499,41 @@ func governorSwitch(mode string) {
 	}
 
 	governorLock.Lock()
-	defer governorLock.Unlock()
-
 	if currentAudioMode == mode {
+		governorLock.Unlock()
 		return
 	}
+	targetAudioMode = mode
+	governorLock.Unlock()
 
 	log.Printf("\n[Governor] Switching audio system to mode: %s", mode)
 
 	// 1. Stop active processes to release the ALSA sound card
+	governorLock.Lock()
 	if direwolfProc != nil && direwolfProc.Process != nil {
-		_ = direwolfProc.Process.Kill()
-		_ = direwolfProc.Wait()
+		killProcessCleanly(direwolfProc)
 		direwolfProc = nil
 	}
 	if rxAudioProc != nil && rxAudioProc.Process != nil {
-		_ = rxAudioProc.Process.Kill()
-		_ = rxAudioProc.Wait()
+		killProcessCleanly(rxAudioProc)
 		rxAudioProc = nil
 	}
+	if mode == "APRS" {
+		forceStopTxAudioProcess()
+	}
+	governorLock.Unlock()
 
 	time.Sleep(1500 * time.Millisecond)
 
 	// 2. Launch appropriate process depending on requested mode
+	governorLock.Lock()
 	if mode == "APRS" && appCfg.UseDirewolf {
 		dwCmdStr := getDirewolfCmd()
 		log.Printf("[Governor] Starting Direwolf: %s", dwCmdStr)
 		parts := strings.Fields(dwCmdStr)
 		if len(parts) > 0 {
 			direwolfProc = exec.Command(parts[0], parts[1:]...)
+			setProcessGroup(direwolfProc)
 			stdoutPipe, errOut := direwolfProc.StdoutPipe()
 			stderrPipe, errErr := direwolfProc.StderrPipe()
 			if errOut != nil || errErr != nil {
@@ -1451,14 +1565,20 @@ func governorSwitch(mode string) {
 		parts := strings.Fields(rxCmdStr)
 		if len(parts) > 0 {
 			rxAudioProc = exec.Command(parts[0], parts[1:]...)
+			setProcessGroup(rxAudioProc)
 			rxAudioProc.Stdout = os.Stdout
 			rxAudioProc.Stderr = os.Stderr
 			if err := rxAudioProc.Start(); err != nil {
 				log.Printf("[Governor] Failed to start RX audio stream: %v", err)
 			}
 		}
+		if appCfg.TxPrewarmed {
+			go ensureTxAudioProcess()
+		}
 	}
 	currentAudioMode = mode
+	targetAudioMode = mode
+	governorLock.Unlock()
 }
 
 func readDirewolfStream(r io.Reader, echo *os.File) {
@@ -1575,6 +1695,7 @@ func governorWatcher() {
 				parts := strings.Fields(rxCmdStr)
 				if len(parts) > 0 {
 					rxAudioProc = exec.Command(parts[0], parts[1:]...)
+					setProcessGroup(rxAudioProc)
 					rxAudioProc.Stdout = os.Stdout
 					rxAudioProc.Stderr = os.Stderr
 					if err := rxAudioProc.Start(); err != nil {
@@ -1585,7 +1706,10 @@ func governorWatcher() {
 		}
 		governorLock.Unlock()
 
-		time.Sleep(1 * time.Second)
+		if !sleepWithShutdown(1 * time.Second) {
+			log.Println("[Governor] Background watcher stopping due to shutdown...")
+			return
+		}
 	}
 }
 
@@ -1749,7 +1873,13 @@ func rxAudioListener() {
 		// Standardowa 3-bajtowa ramka ciszy Opus (TOC 0xf8 + 0xff, 0xfe)
 		opusSilence := []byte{0xf8, 0xff, 0xfe}
 
-		for range ticker.C {
+		for {
+			select {
+			case <-shutdownCtx.Done():
+				return
+			case <-ticker.C:
+			}
+
 			if audioTrack == nil {
 				continue
 			}
@@ -1779,12 +1909,22 @@ func rxAudioListener() {
 		}
 	}()
 
+	go func() {
+		<-shutdownCtx.Done()
+		_ = conn.Close()
+	}()
+
 	buf := make([]byte, 2048)
 	var rtpPkt rtp.Packet
 
 	for {
 		n, _, err := conn.ReadFrom(buf)
 		if err != nil {
+			select {
+			case <-shutdownCtx.Done():
+				return
+			default:
+			}
 			time.Sleep(20 * time.Millisecond)
 			continue
 		}
@@ -1961,6 +2101,7 @@ func buildSyncDBMessage() []byte {
 		"db":               radioDB,
 		"callsign":         curCfg.Callsign,
 		"single_user_mode": curCfg.SingleUserMode,
+		"tx_prewarmed":     curCfg.TxPrewarmed,
 		"mqtt": map[string]interface{}{
 			"aprs_enabled":  curCfg.MQTTAPREnabled,
 			"dtmf_enabled":  curCfg.MQTTDTMFEnabled,
@@ -1986,6 +2127,25 @@ func buildSyncDBMessage() []byte {
 	return msg
 }
 
+func buildRadioStateMessage() []byte {
+	stateLock.RLock()
+	st := radioState
+	stateLock.RUnlock()
+
+	msg, _ := json.Marshal(map[string]interface{}{
+		"cmd":       "radio_state",
+		"freq":      st.Freq,
+		"mod":       st.Mod,
+		"pwr":       st.Pwr,
+		"ctcss":     st.Ctcss,
+		"dcs":       st.Dcs,
+		"monitor":   st.Monitor,
+		"shift_dir": st.ShiftDir,
+		"shift_val": st.ShiftVal,
+	})
+	return msg
+}
+
 func dispatchToClients(msg []byte) {
 	clientsLock.RLock()
 	defer clientsLock.RUnlock()
@@ -1994,6 +2154,37 @@ func dispatchToClients(msg []byte) {
 		case ch <- msg:
 		default:
 		}
+	}
+}
+
+func closeAllClients() {
+	clientsLock.Lock()
+	conns := make([]*websocket.Conn, 0, len(clients))
+	for ws := range clients {
+		conns = append(conns, ws)
+	}
+	clientsLock.Unlock()
+
+	if len(conns) == 0 {
+		return
+	}
+
+	log.Printf("[Shutdown] Notifying %d connected web clients about shutdown...", len(conns))
+	msg, _ := json.Marshal(map[string]interface{}{
+		"cmd":    "server_shutdown",
+		"reason": "Server is stopping or restarting",
+	})
+	dispatchToClients(msg)
+
+	time.Sleep(200 * time.Millisecond)
+
+	for _, ws := range conns {
+		_ = ws.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseGoingAway, "Server shutting down"),
+			time.Now().Add(500*time.Millisecond),
+		)
+		_ = ws.Close()
 	}
 }
 
@@ -2103,7 +2294,9 @@ func sMeterPoller() {
 		// because SCF already reads the S-Meter for each channel being checked.
 		if tx || (active && !paused) {
 			silenceCount = 0
-			time.Sleep(100 * time.Millisecond)
+			if !sleepWithShutdown(100 * time.Millisecond) {
+				return
+			}
 			continue
 		}
 
@@ -2182,7 +2375,9 @@ func sMeterPoller() {
 				}
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		if !sleepWithShutdown(100 * time.Millisecond) {
+			return
+		}
 	}
 }
 
@@ -2201,7 +2396,9 @@ func hwScannerTask() {
 		txLock.Unlock()
 
 		if !active || paused || tx {
-			time.Sleep(50 * time.Millisecond)
+			if !sleepWithShutdown(50 * time.Millisecond) {
+				return
+			}
 			continue
 		}
 
@@ -2211,12 +2408,16 @@ func hwScannerTask() {
 			isBg := hwScanIsBackground
 			hwScanLock.RUnlock()
 			if isBg {
-				time.Sleep(200 * time.Millisecond)
+				if !sleepWithShutdown(200 * time.Millisecond) {
+					return
+				}
 				continue
 			}
 			freqs := getScanFrequencies()
 			if len(freqs) == 0 {
-				time.Sleep(200 * time.Millisecond)
+				if !sleepWithShutdown(200 * time.Millisecond) {
+					return
+				}
 				continue
 			}
 			hwScanLock.Lock()
@@ -2308,7 +2509,9 @@ func sysMonitor() {
 			"temp": math.Round(temp*10) / 10,
 		})
 		dispatchToClients(msg)
-		time.Sleep(2 * time.Second)
+		if !sleepWithShutdown(2 * time.Second) {
+			return
+		}
 	}
 }
 
@@ -2336,7 +2539,9 @@ func watchdogTOT() {
 			dispatchToClients(msg)
 			go publishRadioStatus()
 		}
-		time.Sleep(1 * time.Second)
+		if !sleepWithShutdown(1 * time.Second) {
+			return
+		}
 	}
 }
 
@@ -2536,6 +2741,13 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	const wsReadTimeout = 45 * time.Second
+	_ = ws.SetReadDeadline(time.Now().Add(wsReadTimeout))
+	ws.SetPongHandler(func(string) error {
+		_ = ws.SetReadDeadline(time.Now().Add(wsReadTimeout))
+		return nil
+	})
+
 	var writeMu sync.Mutex
 	safeWrite := func(data []byte) error {
 		writeMu.Lock()
@@ -2655,6 +2867,10 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 
 		txLock.Lock()
+		if isTxStarting {
+			txStartAborted = true
+			isTxStarting = false
+		}
 		if txDrainCancel != nil {
 			close(txDrainCancel)
 			txDrainCancel = nil
@@ -2681,8 +2897,9 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Sync database on connection
+	// Sync database and radio state on connection
 	_ = safeWrite(buildSyncDBMessage())
+	_ = safeWrite(buildRadioStateMessage())
 
 	// Send initial session status
 	statusMode := "multi_user"
@@ -2721,6 +2938,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			break
 		}
+		_ = ws.SetReadDeadline(time.Now().Add(wsReadTimeout))
 
 		// Receive binary audio data (Opus or PCM) during TX
 		if msgType == websocket.BinaryMessage {
@@ -2738,16 +2956,19 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 
 			txLock.Lock()
-			tx := isTransmitting
+			tx := isTransmitting || isTxStarting || isTxDraining
 			txLock.Unlock()
 
 			if tx && len(msg) > 0 {
+				if appCfg.TxPrewarmed {
+					ensureTxAudioProcess()
+				}
 				select {
 				case txAudioQueue <- msg:
 					if len(msg) > 1000 {
 						atomic.AddInt64(&txAudioSamplesReceived, int64(len(msg)/2))
 					} else {
-						atomic.AddInt64(&txAudioSamplesReceived, 960)
+						atomic.AddInt64(&txAudioSamplesReceived, int64(getOpusSamples(msg)))
 					}
 				default:
 					// Drop oldest frame to guarantee real-time audio without creeping delay
@@ -2760,7 +2981,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 						if len(msg) > 1000 {
 							atomic.AddInt64(&txAudioSamplesReceived, int64(len(msg)/2))
 						} else {
-							atomic.AddInt64(&txAudioSamplesReceived, 960)
+							atomic.AddInt64(&txAudioSamplesReceived, int64(getOpusSamples(msg)))
 						}
 					default:
 					}
@@ -2793,7 +3014,11 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 
 			txLock.Lock()
-			wasTx := isTransmitting
+			wasTx := isTransmitting || isTxStarting
+			if isTxStarting {
+				txStartAborted = true
+				isTxStarting = false
+			}
 			if isTransmitting {
 				radio.RxOn()
 				stopTxAudioProcess()
@@ -2834,6 +3059,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 
 			broadcastSessionStatus(&sessInfo)
+			dispatchToClients(buildRadioStateMessage())
 			continue
 		}
 
@@ -3516,10 +3742,18 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				_ = safeWrite([]byte(`{"status":"tx_on"}`))
 				break
 			}
-			if isTransmitting {
+			if isTxStarting || isTransmitting {
 				txLock.Unlock()
 				_ = safeWrite([]byte(`{"status":"tx_on"}`))
 				break
+			}
+			isTxStarting = true
+			txStartAborted = false
+			for len(txAudioQueue) > 0 {
+				select {
+				case <-txAudioQueue:
+				default:
+				}
 			}
 			txLock.Unlock()
 
@@ -3528,6 +3762,9 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			rawFreq, ok := data["freq"].(float64)
 			if !ok || rawFreq <= 0 {
 				log.Printf("[WS] start_tx rejected: invalid or missing freq in request: %v", data["freq"])
+				txLock.Lock()
+				isTxStarting = false
+				txLock.Unlock()
 				_ = safeWrite([]byte(`{"status":"error","message":"Invalid frequency"}`))
 				break
 			}
@@ -3629,19 +3866,30 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			// Clear audio queue
-			for len(txAudioQueue) > 0 {
-				<-txAudioQueue
-			}
-
-			startTxAudioProcess()
-			radio.TxOn()
-
 			txLock.Lock()
+			if txStartAborted {
+				isTxStarting = false
+				txLock.Unlock()
+				log.Printf("[TX Audio] PTT released during radio configuration: aborting TX start cleanly")
+				radio.RxOn()
+				if !appCfg.TxPrewarmed {
+					stopTxAudioProcess()
+				}
+				_ = safeWrite([]byte(`{"status":"tx_off"}`))
+				break
+			}
+			isTxStarting = false
 			isTransmitting = true
 			isTxDraining = false
 			txStartTime = time.Now()
 			txLock.Unlock()
+
+			if !appCfg.TxPrewarmed {
+				startTxAudioProcess()
+			} else {
+				ensureTxAudioProcess()
+			}
+			radio.TxOn()
 
 			stateLock.Lock()
 			radioState.Freq = freq
@@ -3665,6 +3913,13 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 
 			txLock.Lock()
+			if isTxStarting {
+				txStartAborted = true
+				txLock.Unlock()
+				log.Printf("[TX Audio] stop_tx received while radio was starting: signaled abort")
+				_ = safeWrite([]byte(`{"status":"tx_off"}`))
+				break
+			}
 			wasTx := isTransmitting
 			drainingAlready := isTxDraining
 			txLock.Unlock()
@@ -3705,15 +3960,21 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			elapsed := time.Since(txStartTime)
 			queueDuration := time.Duration(len(txAudioQueue)) * 20 * time.Millisecond
 
-			// Pipeline audio duration waiting to be played (queue + ALSA low-delay buffer)
-			const alsaBufferMargin = 30 * time.Millisecond
-			remaining := totalDuration - elapsed + alsaBufferMargin
-			if remaining < queueDuration+alsaBufferMargin {
-				remaining = queueDuration + alsaBufferMargin
+			// Pipeline audio duration waiting to be played (queue + ALSA/FFmpeg hardware buffer margin)
+			drainMarginMs := appCfg.PttSyncDelayMs
+			if drainMarginMs <= 0 {
+				drainMarginMs = 120
 			}
-			if remaining < alsaBufferMargin {
-				remaining = alsaBufferMargin
+			if drainMarginMs < 80 {
+				drainMarginMs = 80
 			}
+			drainMargin := time.Duration(drainMarginMs) * time.Millisecond
+
+			backlog := totalDuration - elapsed
+			if backlog < 0 {
+				backlog = 0
+			}
+			remaining := queueDuration + backlog + drainMargin
 
 			isTxDraining = true
 			cancelCh := make(chan struct{})
@@ -3721,8 +3982,8 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			drainMs := int(remaining.Milliseconds())
 			txLock.Unlock()
 
-			log.Printf("[TX Audio] PTT released with Audio Sync: draining buffer (%d ms remaining, total samples=%d, elapsed=%v)",
-				drainMs, totalSamples, elapsed.Round(time.Millisecond))
+			log.Printf("[TX Audio] PTT released with Audio Sync: draining buffer (%d ms remaining, queue=%d ms, backlog=%d ms, total samples=%d, elapsed=%v)",
+				drainMs, queueDuration.Milliseconds(), backlog.Milliseconds(), totalSamples, elapsed.Round(time.Millisecond))
 
 			drainStartMsg, _ := json.Marshal(map[string]interface{}{
 				"cmd":      "tx_drain_start",
@@ -3731,7 +3992,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			_ = safeWrite(drainStartMsg)
 
 			go func(cancel chan struct{}, totalMs int, stopData map[string]interface{}) {
-				ticker := time.NewTicker(50 * time.Millisecond)
+				ticker := time.NewTicker(30 * time.Millisecond)
 				defer ticker.Stop()
 
 				startDrain := time.Now()
@@ -3746,6 +4007,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 						elapsedDrain := now.Sub(startDrain)
 						rem := drainDuration - elapsedDrain
 						remMs := int(rem.Milliseconds())
+
 						if remMs <= 0 {
 							txLock.Lock()
 							if txDrainCancel != cancel {
@@ -3756,6 +4018,13 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 							isTxDraining = false
 							isTransmitting = false
 							txLock.Unlock()
+
+							for len(txAudioQueue) > 0 {
+								select {
+								case <-txAudioQueue:
+								default:
+								}
+							}
 
 							stopTxAudioProcess()
 							radio.RxOn()
@@ -3948,6 +4217,10 @@ func main() {
 	go governorWatcher()
 	go watchdogTOT()
 
+	if appCfg.TxPrewarmed && !appCfg.UseDirewolf {
+		go startTxAudioProcess()
+	}
+
 	// Initial switch to background services (APRS / DTMF)
 	applyBackgroundServices()
 	go publishRadioStatus()
@@ -3990,31 +4263,11 @@ func main() {
 	// Static HTML / JS / PWA files
 	mux.HandleFunc("/", handleRoot)
 
-	// Handle shutdown signals (Graceful Shutdown)
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		log.Println("\n[System] Shutting down catWebservice...")
-		flushDBToDisk()
-		mqttManager.Disconnect()
-		if radio != nil {
-			radio.RxOn()
-		}
-		stopTxAudioProcess()
-		governorLock.Lock()
-		if direwolfProc != nil && direwolfProc.Process != nil {
-			_ = direwolfProc.Process.Kill()
-		}
-		if rxAudioProc != nil && rxAudioProc.Process != nil {
-			_ = rxAudioProc.Process.Kill()
-		}
-		governorLock.Unlock()
-		if activeLogWriter != nil {
-			_ = activeLogWriter.Close()
-		}
-		os.Exit(0)
-	}()
+	var (
+		httpServer  *http.Server
+		httpsServer *http.Server
+		proxyServer *http.Server
+	)
 
 	// Check and start HTTPS server
 	if _, errC := os.Stat(certPath); errC == nil {
@@ -4024,16 +4277,20 @@ func main() {
 				httpsPort = 8443
 			}
 			httpsAddr := fmt.Sprintf("%s:%d", appCfg.WsHost, httpsPort)
+			httpsServer = &http.Server{
+				Addr:    httpsAddr,
+				Handler: mux,
+			}
 			go func() {
 				log.Printf("[System] HTTPS server started: https://%s:%d (certificate: %s)", appCfg.WsHost, httpsPort, certPath)
-				if err := http.ListenAndServeTLS(httpsAddr, certPath, keyPath, mux); err != nil {
+				if err := httpsServer.ListenAndServeTLS(certPath, keyPath); err != nil && err != http.ErrServerClosed {
 					log.Printf("[System] HTTPS server error: %v", err)
 				}
 			}()
 
 			// Start OpenWebRX HTTPS Reverse Proxy if enabled
 			if appCfg.OwrxProxyEnabled {
-				startOwrxProxy(certPath, keyPath)
+				proxyServer = startOwrxProxy(certPath, keyPath)
 			}
 		} else {
 			log.Printf("[System] Warning: Private key file %s does not exist, skipping HTTPS server", keyPath)
@@ -4043,15 +4300,115 @@ func main() {
 	}
 
 	httpAddr := fmt.Sprintf("%s:%d", appCfg.WsHost, appCfg.WsPort)
-	log.Printf("[System] HTTP server started: http://%s:%d. Configuration loaded from %s", appCfg.WsHost, appCfg.WsPort, cfgFile)
-	log.Fatal(http.ListenAndServe(httpAddr, mux))
+	httpServer = &http.Server{
+		Addr:    httpAddr,
+		Handler: mux,
+	}
+
+	go func() {
+		log.Printf("[System] HTTP server started: http://%s:%d. Configuration loaded from %s", appCfg.WsHost, appCfg.WsPort, cfgFile)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("[System] HTTP server fatal error: %v", err)
+		}
+	}()
+
+	// Wait for termination signal (Ctrl+C, SIGTERM, systemctl stop)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	sig := <-sigChan
+	log.Printf("\n[System] Caught signal %v, starting graceful shutdown sequence...", sig)
+	performGracefulShutdown(httpServer, httpsServer, proxyServer)
+}
+
+func performGracefulShutdown(httpServer, httpsServer, proxyServer *http.Server) {
+	log.Println("\n=======================================================")
+	log.Println("[Shutdown] Initiating clean and graceful shutdown...")
+	log.Println("=======================================================")
+
+	// Global safety fallback: force exit after 2.5 seconds if any low-level driver hangs
+	go func() {
+		time.Sleep(2500 * time.Millisecond)
+		log.Println("[Shutdown] Safety timeout reached (2.5s), forcing immediate process exit.")
+		os.Exit(0)
+	}()
+
+	// 1. Signal background workers to terminate
+	log.Println("[Shutdown] 1/7 Stopping background worker routines...")
+	if shutdownCancel != nil {
+		shutdownCancel()
+	}
+
+	// 2. Shut down HTTP/HTTPS/Proxy servers to release TCP ports immediately
+	log.Println("[Shutdown] 2/7 Closing HTTP/HTTPS listeners to free network ports...")
+	shutdownCtxTimeout, cancelTimeout := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelTimeout()
+
+	if httpServer != nil {
+		if err := httpServer.Shutdown(shutdownCtxTimeout); err != nil {
+			log.Printf("[Shutdown] HTTP server shutdown warning: %v", err)
+		}
+	}
+	if httpsServer != nil {
+		if err := httpsServer.Shutdown(shutdownCtxTimeout); err != nil {
+			log.Printf("[Shutdown] HTTPS server shutdown warning: %v", err)
+		}
+	}
+	if proxyServer != nil {
+		if err := proxyServer.Shutdown(shutdownCtxTimeout); err != nil {
+			log.Printf("[Shutdown] OWRX Proxy shutdown warning: %v", err)
+		}
+	}
+
+	// 3. Notify and close WebSocket clients
+	log.Println("[Shutdown] 3/7 Disconnecting connected web clients cleanly...")
+	closeAllClients()
+
+	// 4. Disengage transmitter and close CAT serial port
+	log.Println("[Shutdown] 4/7 Safely disengaging radio transmitter (PTT OFF) & closing serial port...")
+	if radio != nil {
+		radio.RxOn()
+		time.Sleep(50 * time.Millisecond)
+		radio.Close()
+	}
+
+	// 5. Terminate audio subprocesses
+	log.Println("[Shutdown] 5/7 Terminating audio subprocesses (ffmpeg, aplay, direwolf)...")
+	forceStopTxAudioProcess()
+
+	governorLock.Lock()
+	dwProc := direwolfProc
+	direwolfProc = nil
+	rxProc := rxAudioProc
+	rxAudioProc = nil
+	governorLock.Unlock()
+
+	if dwProc != nil && dwProc.Process != nil {
+		killProcessCleanly(dwProc)
+	}
+	if rxProc != nil && rxProc.Process != nil {
+		killProcessCleanly(rxProc)
+	}
+
+	// 6. Flush DB and disconnect MQTT
+	log.Println("[Shutdown] 6/7 Flushing database changes and disconnecting MQTT...")
+	flushDBToDisk()
+	mqttManager.Disconnect()
+
+	// 7. Flush logs
+	log.Println("[Shutdown] 7/7 Flushing logs and exiting. Goodbye!")
+	if activeLogWriter != nil {
+		_ = activeLogWriter.Close()
+	}
+
+	os.Exit(0)
 }
 
 // startOwrxProxy starts a dedicated HTTPS reverse proxy for OpenWebRX.
 // It proxies all web and SDR waterfall WebSocket traffic to OpenWebRX (e.g. 127.0.0.1:8073)
 // while providing HTTPS TLS termination, serving owrx.js, and auto-injecting the CAT overlay
 // script into OpenWebRX HTML so users get full microphone access and radio controls with zero setup.
-func startOwrxProxy(certPath, keyPath string) {
+func startOwrxProxy(certPath, keyPath string) *http.Server {
 	configLock.RLock()
 	targetStr := appCfg.OwrxBackendURL
 	proxyPort := appCfg.OwrxProxyPort
@@ -4068,7 +4425,7 @@ func startOwrxProxy(certPath, keyPath string) {
 	targetURL, err := url.Parse(targetStr)
 	if err != nil {
 		log.Printf("[OWRX Proxy] Invalid backend URL %s: %v", targetStr, err)
-		return
+		return nil
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
@@ -4137,13 +4494,19 @@ func startOwrxProxy(certPath, keyPath string) {
 	proxyMux.Handle("/", proxy)
 
 	proxyAddr := fmt.Sprintf("%s:%d", host, proxyPort)
+	srv := &http.Server{
+		Addr:    proxyAddr,
+		Handler: proxyMux,
+	}
 
 	go func() {
 		log.Printf("[OWRX Proxy] OpenWebRX HTTPS Reverse Proxy started: https://%s:%d -> %s (with auto-injected owrx.js)", host, proxyPort, targetStr)
-		if err := http.ListenAndServeTLS(proxyAddr, certPath, keyPath, proxyMux); err != nil {
+		if err := srv.ListenAndServeTLS(certPath, keyPath); err != nil && err != http.ErrServerClosed {
 			log.Printf("[OWRX Proxy] Server error: %v", err)
 		}
 	}()
+
+	return srv
 }
 
 // ensureTLSCertificates checks if the TLS certificate and private key exist.

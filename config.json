@@ -69,13 +69,17 @@
     // ffmpeg command to capture radio RX audio and encode to Opus RTP stream
     "rx_audio_cmd": "ffmpeg -hide_banner -loglevel error -flags low_delay -fflags nobuffer -probesize 32 -analyzeduration 0 -f alsa -thread_queue_size 64 -ar 48000 -ac 1 -i {DEVICE} -c:a libopus -b:a 48k -vbr off -application voip -frame_duration 20 -flush_packets 1 -f rtp rtp://127.0.0.1:4000",
     // ffmpeg command to decode TX audio from browser and output to radio microphone
-    "tx_audio_cmd": "ffmpeg -hide_banner -loglevel error -flags low_delay -fflags nobuffer -probesize 32 -analyzeduration 0 -f ogg -i pipe:0 -f s16le -ac 1 -ar 48000 - | aplay -D {DEVICE} -f S16_LE -c 1 -r 48000 --buffer-time=20000 --period-time=5000 -q",
+    "tx_audio_cmd": "ffmpeg -hide_banner -loglevel error -flags low_delay -fflags nobuffer -probesize 1024 -analyzeduration 0 -flush_packets 1 -f ogg -i pipe:0 -f s16le -ac 1 -ar 48000 - | aplay -D {DEVICE} -f S16_LE -c 1 -r 48000 --buffer-time=50000 -q",
 
     // =========================================================================
     // TRANSMITTER SAFETY & WATCHDOG
     // =========================================================================
     // Time-Out Timer limit in seconds (automatically drops PTT if transmit exceeds this)
     "tot_limit_seconds": 3600,
+    // Hardware audio drain margin for PTT Audio Sync in milliseconds (ensures all speech in flight is emitted before radio drops carrier)
+    "ptt_sync_delay_ms": 120,
+    // Pre-warmed audio pipeline: keeps ALSA audio playback running continuously for instantaneous PTT key-up (0ms audio cold start)
+    "tx_prewarmed": true,
 
     // =========================================================================
     // BACKGROUND SERVICES & SCANNER (APRS & DTMF Dual-Watch)

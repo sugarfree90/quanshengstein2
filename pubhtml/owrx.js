@@ -126,27 +126,30 @@ window.preTxVolume = null;
 window.isStickyPtt = false;
 window.isDraining = false;
 window.pttAudioSyncEnabled = (localStorage.getItem('ptt_audio_sync') !== "0"); // default enabled
+window.txPrewarmed = true; // Pre-warmed audio streaming enabled
 let drainInterval = null;
 let drainStartTime = 0;
-let drainTotalDuration = 100;
+let drainTotalDuration = 250;
 
-function flushRemainingTxAudio() {
+async function flushRemainingTxAudio() {
     if (txPcmBuffer && txPcmBuffer.length > 0 && opusEncoder) {
-        let padded = new Float32Array(960);
-        padded.set(txPcmBuffer);
+        let padded = new Float32Array(480);
+        padded.set(txPcmBuffer.slice(0, 480));
         txPcmBuffer = new Float32Array(0);
         try {
             let audioData = new AudioData({
-                format: 'f32-planar', sampleRate: 48000, numberOfFrames: 960,
+                format: 'f32-planar', sampleRate: 48000, numberOfFrames: 480,
                 numberOfChannels: 1, timestamp: txTimestamp, data: padded
             });
-            txTimestamp += 20000;
+            txTimestamp += 10000;
             opusEncoder.encode(audioData);
             audioData.close();
         } catch(e) {}
     }
     if (opusEncoder && typeof opusEncoder.flush === 'function') {
-        opusEncoder.flush().catch(() => {});
+        try {
+            await opusEncoder.flush();
+        } catch(e) {}
     }
 }
 
@@ -159,7 +162,7 @@ function startDrainAnimation(exactDurationMs) {
     if (exactDurationMs && exactDurationMs > 0) {
         drainTotalDuration = exactDurationMs;
     } else {
-        drainTotalDuration = Math.max(drainTotalDuration, 30);
+        drainTotalDuration = Math.max(drainTotalDuration, 120);
     }
     drainStartTime = performance.now();
 
@@ -188,6 +191,11 @@ function startDrainAnimation(exactDurationMs) {
 
         if (remaining <= 0) {
             clearInterval(drainInterval);
+            setTimeout(() => {
+                if (window.isDraining) {
+                    finishTxStop();
+                }
+            }, 350);
         }
     }, 40);
 }
@@ -360,9 +368,9 @@ function updateConnectionState(state) {
             btnTxt.innerText = "TRANSMITTING (TX)";
             if (progressBar) { progressBar.style.display = "none"; progressBar.style.width = "0%"; }
         } else if (micReady) {
-            container.style.backgroundColor = "#4CAF50";
+            container.style.backgroundColor = "#2e7d32";
             btn.style.cursor = "pointer";
-            btnTxt.innerText = "Ready! Push PTT";
+            btnTxt.innerText = window.txPrewarmed ? "READY (MIC LIVE) - Push PTT" : "Ready! Push PTT";
             if (progressBar) { progressBar.style.display = "none"; progressBar.style.width = "0%"; }
         } else {
             container.style.backgroundColor = "#2196F3";
@@ -618,6 +626,36 @@ async function startWebRTCConnection() {
     
     if (webrtcPC) webrtcPC.close();
     webrtcPC = new RTCPeerConnection();
+
+    let reconnectTimer = null;
+    const handleWebRTCDisconnect = (state) => {
+        if (!rxAudioEnabled) return;
+        if (reconnectTimer) return;
+        console.warn(`[WebRTC] Connection ${state}, auto-reconnecting in 1500ms...`);
+        let rxLabel = document.getElementById('rx-audio-label');
+        if (rxLabel) {
+            rxLabel.style.backgroundColor = "#ff9800";
+            let span = rxLabel.querySelector('span');
+            if (span) span.innerText = "Reconnecting...";
+        }
+        reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            if (rxAudioEnabled) {
+                initWebRTCReceiver();
+            }
+        }, 1500);
+    };
+
+    webrtcPC.onconnectionstatechange = () => {
+        if (webrtcPC && (webrtcPC.connectionState === 'failed' || webrtcPC.connectionState === 'disconnected')) {
+            handleWebRTCDisconnect(webrtcPC.connectionState);
+        }
+    };
+    webrtcPC.oniceconnectionstatechange = () => {
+        if (webrtcPC && (webrtcPC.iceConnectionState === 'failed' || webrtcPC.iceConnectionState === 'disconnected')) {
+            handleWebRTCDisconnect(webrtcPC.iceConnectionState);
+        }
+    };
     
     webrtcPC.ontrack = (event) => {
         console.log("[WebRTC] Received audio stream. Playing...");
@@ -1004,7 +1042,8 @@ async function initMicrophone() {
                 output: (chunk, metadata) => {
                     let opusData = new Uint8Array(chunk.byteLength);
                     chunk.copyTo(opusData);
-                    if ((isTransmitting || window.isDraining) && txSocket && txSocket.readyState === WebSocket.OPEN) {
+                    let shouldSend = isTransmitting || window.isDraining;
+                    if (shouldSend && txSocket && txSocket.readyState === WebSocket.OPEN && window.isSessionOwner !== false) {
                         txSocket.send(opusData.buffer);
                     }
                 },
@@ -1019,7 +1058,7 @@ async function initMicrophone() {
                 opus: {
                     application: 'voip',
                     signal: 'voice',
-                    frameDuration: 20000
+                    frameDuration: 10000
                 }
             });
         }
@@ -1041,25 +1080,26 @@ async function initMicrophone() {
         window.txWorkletNode = new AudioWorkletNode(audioContext, 'tx-processor');
         window.txWorkletNode.port.onmessage = (e) => {
             let inputData = e.data;
-            if (isTransmitting) {
+            let shouldProcess = isTransmitting || window.isDraining;
+            if (shouldProcess) {
                 let newBuffer = new Float32Array(txPcmBuffer.length + inputData.length);
                 newBuffer.set(txPcmBuffer, 0);
                 newBuffer.set(inputData, txPcmBuffer.length);
                 txPcmBuffer = newBuffer;
 
-                while (txPcmBuffer.length >= 960) {
-                    let frameData = txPcmBuffer.slice(0, 960);
-                    txPcmBuffer = txPcmBuffer.slice(960);
+                while (txPcmBuffer.length >= 480) {
+                    let frameData = txPcmBuffer.slice(0, 480);
+                    txPcmBuffer = txPcmBuffer.slice(480);
 
                     let audioData = new AudioData({
-                        format: 'f32-planar', sampleRate: 48000, numberOfFrames: 960,
+                        format: 'f32-planar', sampleRate: 48000, numberOfFrames: 480,
                         numberOfChannels: 1, timestamp: txTimestamp, data: frameData
                     });
-                    txTimestamp += 20000; 
+                    txTimestamp += 10000; 
                     opusEncoder.encode(audioData);
                     audioData.close();
                 }
-            } else if (!window.isDraining) {
+            } else {
                 txPcmBuffer = new Float32Array(0);
             }
         };
@@ -1138,7 +1178,7 @@ window.updateCompactSMeter = function(dbm, sql) {
     }
 };
 
-function setTxState(state) {
+async function setTxState(state) {
     if (!isConnected || !txSocket || txSocket.readyState !== WebSocket.OPEN) return;
     if (!micReady) {
         if (state === true && !micInitInProgress) {
@@ -1233,11 +1273,12 @@ function setTxState(state) {
         }));
     } else {
         // PTT released
-        flushRemainingTxAudio();
         isTransmitting = false;
 
         if (window.pttAudioSyncEnabled) {
-            startDrainAnimation();
+            window.isDraining = true;
+            startDrainAnimation(120);
+            await flushRemainingTxAudio();
             let ctcssSelect = document.getElementById('tx-ctcss');
             let dcsSelect = document.getElementById('tx-dcs');
             txSocket.send(JSON.stringify({ 
@@ -1247,6 +1288,7 @@ function setTxState(state) {
             return;
         }
 
+        await flushRemainingTxAudio();
         // Immediate stop without sync
         finishTxStop();
     }
@@ -1422,6 +1464,7 @@ function initTxPlugin() {
 
     txSocket.onopen = () => {
         console.log("[owrx.js] CAT WebSocket connected successfully to:", wsUrl);
+        window.isServerShuttingDown = false;
         updateConnectionState(true);
         
         // Fast frequency sync after connection so backend knows the band immediately
@@ -1429,7 +1472,7 @@ function initTxPlugin() {
         
         let mainSelect = document.getElementById('openwebrx-sdr-profiles-listbox');
         if(mainSelect) mainSelect.addEventListener('change', () => { setTimeout(window.applyProfileSettings, 100); });
-        heartbeatInterval = setInterval(() => { if (txSocket && txSocket.readyState === WebSocket.OPEN) txSocket.send(JSON.stringify({ cmd: "heartbeat" })); }, 30000);
+        heartbeatInterval = setInterval(() => { if (txSocket && txSocket.readyState === WebSocket.OPEN) txSocket.send(JSON.stringify({ cmd: "ping" })); }, 5000);
         
         // Protected autostart RX - Give backend 1 second in case it needs to stop Direwolf
         if (localStorage.getItem('tx_rx_audio') === "1") {
@@ -1445,7 +1488,16 @@ function initTxPlugin() {
         if (typeof event.data === "string") {
             try {
                 let msg = JSON.parse(event.data);
-                if (msg.cmd === "sql_state") {
+                if (msg.cmd === "server_shutdown") {
+                    window.isServerShuttingDown = true;
+                    let pttBtn = document.getElementById('openwebrx-ptt-btn');
+                    if (pttBtn) {
+                        pttBtn.innerText = "SERVER RESTARTING...";
+                        pttBtn.style.backgroundColor = "#ff9800";
+                        pttBtn.style.color = "#000";
+                    }
+                    return;
+                } else if (msg.cmd === "sql_state") {
                     window.sqlOpen = msg.open;
                     let rxLabel = document.getElementById('rx-audio-label');
                     if (rxLabel) {
@@ -1503,6 +1555,20 @@ function initTxPlugin() {
                     window.radioFree = !!msg.radio_free;
 
                     if (msg.mode === "single_user" && msg.is_owner === false) {
+                        // Immediately abort active TX / microphone recording if session was lost
+                        if (isTransmitting || window.isDraining) {
+                            if (mediaRecorder && mediaRecorder.state === "recording") {
+                                try { mediaRecorder.stop(); } catch(e) {}
+                            }
+                            if (window.isStickyPtt) {
+                                window.isStickyPtt = false;
+                                let stickyBtn = document.getElementById('ptt-sticky');
+                                if (stickyBtn) { stickyBtn.style.backgroundColor = "rgba(0,0,0,0.2)"; stickyBtn.innerHTML = "🔓"; }
+                            }
+                            cancelDrain();
+                            finishTxStop();
+                        }
+
                         let owner = msg.current_owner || msg.taken_over_by || {};
                         if (!hasHostModal && modal) {
                             let title = document.getElementById('owrx-modal-title');
@@ -1563,8 +1629,12 @@ function initTxPlugin() {
                         if (modal) modal.style.display = 'none';
                     }
                     updateConnectionState(isConnected);
-                } else if (msg.cmd === "sync_db" && msg.db) {
-                    if (typeof msg.db.ptt_audio_sync !== 'undefined') {
+                } else if (msg.cmd === "sync_db") {
+                    if (typeof msg.tx_prewarmed !== 'undefined') {
+                        window.txPrewarmed = !!msg.tx_prewarmed;
+                        updateConnectionState(isConnected);
+                    }
+                    if (msg.db && typeof msg.db.ptt_audio_sync !== 'undefined') {
                         window.pttAudioSyncEnabled = !!msg.db.ptt_audio_sync;
                         localStorage.setItem('ptt_audio_sync', window.pttAudioSyncEnabled ? "1" : "0");
                         let chk = document.getElementById('ptt-sync-enable');
@@ -1581,7 +1651,18 @@ function initTxPlugin() {
         finishTxStop();
         updateConnectionState(false); 
         clearInterval(heartbeatInterval); 
-        setTimeout(initTxPlugin, 5000); 
+        if (window.isServerShuttingDown) {
+            let pttBtn = document.getElementById('openwebrx-ptt-btn');
+            if (pttBtn) {
+                pttBtn.innerText = "RESTARTING (retrying in 3s)...";
+            }
+            setTimeout(() => {
+                window.isServerShuttingDown = false;
+                initTxPlugin();
+            }, 3000);
+        } else {
+            setTimeout(initTxPlugin, 5000); 
+        }
     };
     txSocket.onerror = (err) => { 
         console.error("[owrx.js] WebSocket error connecting to " + wsUrl + ". Note: If using self-signed HTTPS certificate on port 8443, open https://" + _backendOrigin.host + " in a browser tab first and accept the certificate exception.", err);
