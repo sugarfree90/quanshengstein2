@@ -2440,7 +2440,7 @@ func formatClientInfo(ua string, referer string) string {
 		osName = "Linux"
 	}
 
-	browserName := "Przeglądarka"
+	browserName := "Browser"
 	if strings.Contains(uaLower, "edg/") {
 		browserName = "Edge"
 	} else if strings.Contains(uaLower, "chrome/") || strings.Contains(uaLower, "crios/") {
@@ -2462,7 +2462,7 @@ func formatClientInfo(ua string, referer string) string {
 	}
 
 	if ua == "" {
-		return fmt.Sprintf("Nieznane urządzenie (%s)", appType)
+		return fmt.Sprintf("Unknown Device (%s)", appType)
 	}
 	return fmt.Sprintf("%s - %s (%s)", osName, browserName, appType)
 }
@@ -3590,7 +3590,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			dispatchToClients(buildSyncDBMessage())
 
-			// Konfiguracja radia pod TX: sprawdzamy aktualny stan, aby nie tracić 300 ms na niepotrzebne komendy CAT
+			// Configure radio for TX: verify current state to avoid wasting 300ms on redundant CAT commands
 			stateLock.RLock()
 			curFreq := radioState.Freq
 			curMod := radioState.Mod
@@ -3623,7 +3623,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				if needPwr {
 					radio.SetPower(pwr)
 				}
-				// Minimalne 15 ms stabilizacji PLL tylko wtedy, gdy częstotliwość uległa zmianie (np. shift przemiennika)
+				// Minimal 15ms PLL lock time only when frequency actually changed (e.g. repeater shift)
 				if needFreq {
 					time.Sleep(15 * time.Millisecond)
 				}

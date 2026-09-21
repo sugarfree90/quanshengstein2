@@ -85,18 +85,18 @@ function createSessionModal() {
     modal.innerHTML = `
         <div style="background:#1e1e1e; border: 2px solid #ff9800; border-radius: 12px; padding: 24px; max-width: 440px; width: 90%; box-shadow: 0 10px 30px rgba(0,0,0,0.8); color: #fff; text-align: center; box-sizing: border-box;">
             <div style="font-size: 38px; margin-bottom: 8px;">📻🔒</div>
-            <h3 id="owrx-modal-title" style="margin: 0 0 12px 0; color: #ff9800; font-size: 18px;">Radio jest obecnie używane</h3>
+            <h3 id="owrx-modal-title" style="margin: 0 0 12px 0; color: #ff9800; font-size: 18px;">Radio is currently in use</h3>
             <p id="owrx-modal-desc" style="font-size: 13px; color: #ccc; margin: 0 0 16px 0; line-height: 1.5;">
-                Włączony jest tryb pojedynczego użytkownika. Inny operator ma obecnie kontrolę nad radiem:
+                Single-user mode is enabled. Another operator currently has control of the radio:
             </p>
             <div id="owrx-modal-info-box" style="background: rgba(0,0,0,0.5); border: 1px solid #444; border-radius: 8px; padding: 12px; text-align: left; font-size: 13px; margin-bottom: 20px;">
-                <div style="margin-bottom: 6px;"><strong style="color: #aaa;">Adres IP:</strong> <span id="owrx-modal-ip" style="color: #4CAF50; font-family: monospace; font-weight: bold;">--</span></div>
-                <div style="margin-bottom: 6px;"><strong style="color: #aaa;">Urządzenie:</strong> <span id="owrx-modal-device" style="color: #2196F3;">--</span></div>
-                <div><strong style="color: #aaa;">Połączony od:</strong> <span id="owrx-modal-time" style="color: #eee; font-family: monospace;">--</span></div>
+                <div style="margin-bottom: 6px;"><strong style="color: #aaa;">IP Address:</strong> <span id="owrx-modal-ip" style="color: #4CAF50; font-family: monospace; font-weight: bold;">--</span></div>
+                <div style="margin-bottom: 6px;"><strong style="color: #aaa;">Device:</strong> <span id="owrx-modal-device" style="color: #2196F3;">--</span></div>
+                <div><strong style="color: #aaa;">Connected since:</strong> <span id="owrx-modal-time" style="color: #eee; font-family: monospace;">--</span></div>
             </div>
             <div style="display: flex; gap: 10px; justify-content: center;">
                 <button id="owrx-modal-takeover-btn" onclick="window.takeoverOwrxSession()" style="background: #ff9800; color: #000; border: none; font-weight: bold; font-size: 14px; padding: 12px 20px; border-radius: 6px; cursor: pointer; transition: background 0.2s; box-shadow: 0 4px 10px rgba(255,152,0,0.3);">
-                    ⚡ Przejmij kontrolę nad radiem
+                    ⚡ Take over radio control
                 </button>
             </div>
         </div>
@@ -109,7 +109,7 @@ window.takeoverOwrxSession = function() {
         let btn = document.getElementById('owrx-modal-takeover-btn');
         if (btn) {
             btn.disabled = true;
-            btn.innerText = "Przejmowanie sesji...";
+            btn.innerText = "Taking over session...";
         }
         txSocket.send(JSON.stringify({ cmd: "takeover_session" }));
     }
@@ -343,9 +343,9 @@ function updateConnectionState(state) {
         btn.style.cursor = "not-allowed";
         btn.style.pointerEvents = "none";
         if (window.radioFree) {
-            btnTxt.innerText = "Radio wolne (przejmij kontrolę)";
+            btnTxt.innerText = "Radio free (take control)";
         } else {
-            btnTxt.innerText = "Radio w użyciu przez innego operatora";
+            btnTxt.innerText = "Radio in use by another operator";
         }
         if (progressBar) { progressBar.style.display = "none"; progressBar.style.width = "0%"; }
     } else {
@@ -941,7 +941,7 @@ function createTxPanel() {
                 <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px;">
                     <input type="checkbox" id="mic-comp-enable" onchange="window.updateMicRouting()" style="transform: scale(1.3);" ${savedComp}> Enable Speech Compressor
                 </label>
-                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px;" title="Podtrzymuje nadawanie PTT do momentu całkowitego wyemitowania bufora audio, zapobiegając ucinaniu końcówek wypowiedzi">
+                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px;" title="Holds PTT transmission until audio buffer is completely played, preventing clipped speech endings">
                     <input type="checkbox" id="ptt-sync-enable" onchange="window.togglePttAudioSync(this.checked)" style="transform: scale(1.3);" ${savedPttSync}> PTT Audio Sync
                 </label>
             </div>
@@ -1518,41 +1518,41 @@ function initTxPlugin() {
 
                             if (msg.radio_free) {
                                 if (title) {
-                                    title.innerText = "Radio jest wolne";
+                                    title.innerText = "Radio is available";
                                     title.style.color = "#4CAF50";
                                 }
-                                if (desc) desc.innerText = "Nikt obecnie nie korzysta z radia. W tle aktywne są usługi APRS i DTMF. Kliknij poniżej, aby przejąć kontrolę:";
+                                if (desc) desc.innerText = "No one is currently using the radio. APRS and DTMF background services are active. Click below to take control:";
                                 if (infoBox) infoBox.style.display = 'none';
                                 if (btn) {
-                                    btn.innerText = "⚡ Przejmij kontrolę nad radiem";
+                                    btn.innerText = "⚡ Take over radio control";
                                     btn.style.background = "#4CAF50";
                                 }
                             } else if (msg.taken_over_by) {
                                 if (title) {
-                                    title.innerText = "Twoja sesja została przejęta!";
+                                    title.innerText = "Your session was taken over!";
                                     title.style.color = "#ff9800";
                                 }
-                                if (desc) desc.innerText = "Inny operator przejął wyłączną kontrolę nad radiem. Możesz przejąć sesję z powrotem:";
+                                if (desc) desc.innerText = "Another operator took exclusive control of the radio. You can take the session back:";
                                 if (infoBox) infoBox.style.display = 'block';
-                                if (ipEl) ipEl.innerText = owner.ip || "Nieznany";
-                                if (devEl) devEl.innerText = owner.client_info || "Nieznane urządzenie";
+                                if (ipEl) ipEl.innerText = owner.ip || "Unknown";
+                                if (devEl) devEl.innerText = owner.client_info || "Unknown Device";
                                 if (timeEl) timeEl.innerText = owner.connected_at || "--:--:--";
                                 if (btn) {
-                                    btn.innerText = "⚡ Przejmij kontrolę z powrotem";
+                                    btn.innerText = "⚡ Take control back";
                                     btn.style.background = "#ff9800";
                                 }
                             } else {
                                 if (title) {
-                                    title.innerText = "Radio jest obecnie używane";
+                                    title.innerText = "Radio is currently in use";
                                     title.style.color = "#ff9800";
                                 }
-                                if (desc) desc.innerText = "Włączony jest tryb pojedynczego użytkownika. Inny operator ma obecnie kontrolę nad radiem:";
+                                if (desc) desc.innerText = "Single-user mode is enabled. Another operator currently has control of the radio:";
                                 if (infoBox) infoBox.style.display = 'block';
-                                if (ipEl) ipEl.innerText = owner.ip || "Nieznany";
-                                if (devEl) devEl.innerText = owner.client_info || "Nieznane urządzenie";
+                                if (ipEl) ipEl.innerText = owner.ip || "Unknown";
+                                if (devEl) devEl.innerText = owner.client_info || "Unknown Device";
                                 if (timeEl) timeEl.innerText = owner.connected_at || "--:--:--";
                                 if (btn) {
-                                    btn.innerText = "⚡ Przejmij kontrolę nad radiem";
+                                    btn.innerText = "⚡ Take over radio control";
                                     btn.style.background = "#ff9800";
                                 }
                             }
