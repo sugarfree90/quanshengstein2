@@ -1560,6 +1560,10 @@
                 }, 1500);
                 uiSocket.send(JSON.stringify({ cmd: "ping", t: Date.now() }));
 
+                if (localStorage.getItem('quansheng_first_use_acked') === '1') {
+                    uiSocket.send(JSON.stringify({ cmd: "ack_first_use" }));
+                }
+
                 if (currentFreq > 0) {
                     uiSocket.send(JSON.stringify({
                         cmd: "apply_profile",
@@ -1682,6 +1686,18 @@
                             }
                             renderVFO();
                         } else if (msg.cmd === "sync_db" && msg.db) {
+                            if (typeof msg.first_use !== 'undefined') {
+                                if (msg.first_use === true) {
+                                    if (localStorage.getItem('quansheng_first_use_acked') === '1') {
+                                        if (typeof window.ackFirstUse === 'function') window.ackFirstUse();
+                                    } else {
+                                        if (typeof window.showFirstUseModal === 'function') window.showFirstUseModal();
+                                    }
+                                } else {
+                                    localStorage.removeItem('quansheng_first_use_acked');
+                                    if (typeof window.hideFirstUseModal === 'function') window.hideFirstUseModal();
+                                }
+                            }
                             if (msg.owrx && typeof msg.owrx.enabled === 'boolean') {
                                 updateOwrxButton(msg.owrx);
                             } else {

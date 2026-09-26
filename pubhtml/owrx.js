@@ -115,6 +115,149 @@ window.takeoverOwrxSession = function() {
     }
 };
 
+function createFirstUseModal() {
+    if (document.getElementById('first-use-warning-modal')) return;
+    if (!document.body) {
+        window.addEventListener('DOMContentLoaded', createFirstUseModal);
+        return;
+    }
+
+    let modal = document.createElement('div');
+    modal.id = 'first-use-warning-modal';
+    Object.assign(modal.style, {
+        position: 'fixed',
+        top: '0',
+        left: '0',
+        width: '100%',
+        height: '100%',
+        backgroundColor: 'rgba(0, 0, 0, 0.85)',
+        backdropFilter: 'blur(8px)',
+        WebkitBackdropFilter: 'blur(8px)',
+        display: 'none',
+        justifyContent: 'center',
+        alignItems: 'center',
+        zIndex: '200000',
+        fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif",
+        padding: '16px',
+        boxSizing: 'border-box'
+    });
+
+    modal.innerHTML = `
+        <div style="background: #1a1a1a; border: 2px solid #ff9800; border-radius: 14px; max-width: 580px; width: 100%; max-height: 90vh; overflow-y: auto; box-shadow: 0 16px 40px rgba(0,0,0,0.9), 0 0 20px rgba(255,152,0,0.2); color: #e0e0e0; box-sizing: border-box; display: flex; flex-direction: column;">
+            
+            <!-- Modal Header -->
+            <div style="padding: 20px 24px 14px 24px; border-bottom: 1px solid #333; display: flex; align-items: center; gap: 14px; background: rgba(255, 152, 0, 0.08); border-radius: 12px 12px 0 0;">
+                <div style="font-size: 36px; line-height: 1;">⚠️</div>
+                <div>
+                    <h2 style="margin: 0; font-size: 20px; color: #ff9800; font-weight: bold; letter-spacing: 0.5px;">Important Safety & Legal Notice</h2>
+                    <div style="font-size: 12px; color: #aaa; margin-top: 3px;">Please read and acknowledge before operating this station</div>
+                </div>
+            </div>
+
+            <!-- Modal Content / Warning Items -->
+            <div style="padding: 20px 24px; display: flex; flex-direction: column; gap: 16px; font-size: 13.5px; line-height: 1.55;">
+                
+                <!-- Notice 1: Amateur Radio License -->
+                <div style="background: rgba(244, 67, 54, 0.08); border-left: 4px solid #f44336; border-radius: 6px; padding: 12px 14px;">
+                    <div style="color: #ff7961; font-weight: bold; font-size: 14px; margin-bottom: 5px; display: flex; align-items: center; gap: 6px;">
+                        <span>📜</span> Amateur Radio License Requirement
+                    </div>
+                    <div style="color: #ddd;">
+                        Transmitting on amateur radio frequencies requires a <strong>valid amateur radio operator license</strong>. Operating a transmitter without an appropriate license is illegal under national telecommunications law and international regulations. You are strictly responsible for adhering to your licensed frequency privileges, maximum allowed power output, and required callsign identification.
+                    </div>
+                </div>
+
+                <!-- Notice 2: PA Burnout Risk -->
+                <div style="background: rgba(255, 152, 0, 0.08); border-left: 4px solid #ff9800; border-radius: 6px; padding: 12px 14px;">
+                    <div style="color: #ffb74d; font-weight: bold; font-size: 14px; margin-bottom: 5px; display: flex; align-items: center; gap: 6px;">
+                        <span>🔥</span> RF Hardware Protection & PA Burnout Risk
+                    </div>
+                    <div style="color: #ddd;">
+                        The power amplifier (PA) in handheld transceivers like the Quansheng can <strong>burn out and fail permanently</strong> if operated with a mismatched antenna, high SWR (Standing Wave Ratio), or without an antenna/dummy load connected. Additionally, prolonged continuous key-down transmissions without active cooling can quickly overheat the finals. Always verify antenna resonance and utilize reasonable transmission limits (TOT).
+                    </div>
+                </div>
+
+                <!-- Notice 3: Remote Failsafe / Remote Switch -->
+                <div style="background: rgba(33, 150, 243, 0.08); border-left: 4px solid #2196F3; border-radius: 6px; padding: 12px 14px;">
+                    <div style="color: #64b5f6; font-weight: bold; font-size: 14px; margin-bottom: 5px; display: flex; align-items: center; gap: 6px;">
+                        <span>🔌</span> Remote Operation & Mandatory Power Failsafe
+                    </div>
+                    <div style="color: #ddd;">
+                        If you operate this radio remotely or unattended, <strong>you must have an independent, external remote power cutoff</strong> (such as a smart Wi-Fi/Zigbee plug or hardware relay). In the event of a software crash, host computer lockup, network drop, or stuck PTT carrier, this independent failsafe allows you to immediately cut power and prevent dangerous continuous transmission or fire hazards.
+                    </div>
+                </div>
+
+                <!-- Notice 4: Community Survey -->
+                <div style="background: rgba(76, 175, 80, 0.08); border-left: 4px solid #4CAF50; border-radius: 6px; padding: 12px 14px;">
+                    <div style="color: #81c784; font-weight: bold; font-size: 14px; margin-bottom: 5px; display: flex; align-items: center; gap: 6px;">
+                        <span>📋</span> User Feedback Survey
+                    </div>
+                    <div style="color: #ddd; margin-bottom: 8px;">
+                        Are you using Quanshengstein? We would love to hear from you! Please consider sharing your thoughts, setup details, and feature suggestions in our quick survey:
+                    </div>
+                    <div>
+                        <a href="https://docs.google.com/forms/d/e/1FAIpQLScTkM1HzIyg-XJ0ti1zoC1O1JmJHtbAPIbO1HEf6PWzMUdWgQ/viewform?usp=publish-editor" target="_blank" rel="noopener noreferrer" style="display: inline-flex; align-items: center; gap: 6px; background: #2e7d32; color: #fff; padding: 7px 14px; border-radius: 5px; text-decoration: none; font-size: 13px; font-weight: bold; transition: background 0.2s; box-shadow: 0 2px 6px rgba(0,0,0,0.3);">
+                            <span>📝 Open Feedback Survey ↗</span>
+                        </a>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Modal Footer / Got It Button -->
+            <div style="padding: 16px 24px 20px 24px; border-top: 1px solid #333; display: flex; flex-direction: column; align-items: center; gap: 10px; background: #161616; border-radius: 0 0 12px 12px;">
+                <button id="first-use-ack-btn" onclick="window.ackFirstUse()" style="width: 100%; max-width: 240px; background: #4CAF50; color: #fff; border: none; font-weight: bold; font-size: 16px; padding: 12px 24px; border-radius: 8px; cursor: pointer; transition: all 0.2s; box-shadow: 0 4px 14px rgba(76, 175, 80, 0.4); text-transform: uppercase; letter-spacing: 0.5px;">
+                    Got it!
+                </button>
+                <div style="font-size: 11px; color: #777; text-align: center;">
+                    Dismisses this notice and enables full transmitter operation.
+                </div>
+            </div>
+
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+}
+
+window.showFirstUseModal = function() {
+    createFirstUseModal();
+    let m = document.getElementById('first-use-warning-modal');
+    if (m) {
+        m.style.display = 'flex';
+    }
+};
+
+window.hideFirstUseModal = function() {
+    let m = document.getElementById('first-use-warning-modal');
+    if (m) {
+        m.style.display = 'none';
+    }
+};
+
+window.ackFirstUse = function() {
+    let btn = document.getElementById('first-use-ack-btn');
+    if (btn) {
+        btn.disabled = true;
+        btn.innerText = "Acknowledging...";
+    }
+    let payload = JSON.stringify({ cmd: "ack_first_use" });
+    let sent = false;
+    if (window.txSocket && window.txSocket.readyState === WebSocket.OPEN) {
+        window.txSocket.send(payload);
+        sent = true;
+    }
+    if (typeof uiSocket !== 'undefined' && uiSocket && uiSocket.readyState === WebSocket.OPEN) {
+        uiSocket.send(payload);
+        sent = true;
+    }
+    if (!sent) {
+        localStorage.setItem('quansheng_first_use_acked', '1');
+    }
+    window.hideFirstUseModal();
+    console.log("[FirstUse] Acknowledged first use notice. Sent:", sent);
+};
+
 let audioContext;
 let micStream;
 let micReady = false;
@@ -1474,6 +1617,10 @@ function initTxPlugin() {
         if(mainSelect) mainSelect.addEventListener('change', () => { setTimeout(window.applyProfileSettings, 100); });
         heartbeatInterval = setInterval(() => { if (txSocket && txSocket.readyState === WebSocket.OPEN) txSocket.send(JSON.stringify({ cmd: "ping" })); }, 5000);
         
+        if (localStorage.getItem('quansheng_first_use_acked') === '1') {
+            txSocket.send(JSON.stringify({ cmd: "ack_first_use" }));
+        }
+
         // Protected autostart RX - Give backend 1 second in case it needs to stop Direwolf
         if (localStorage.getItem('tx_rx_audio') === "1") {
             setTimeout(() => {
@@ -1630,6 +1777,18 @@ function initTxPlugin() {
                     }
                     updateConnectionState(isConnected);
                 } else if (msg.cmd === "sync_db") {
+                    if (typeof msg.first_use !== 'undefined') {
+                        if (msg.first_use === true) {
+                            if (localStorage.getItem('quansheng_first_use_acked') === '1') {
+                                window.ackFirstUse();
+                            } else {
+                                window.showFirstUseModal();
+                            }
+                        } else {
+                            localStorage.removeItem('quansheng_first_use_acked');
+                            window.hideFirstUseModal();
+                        }
+                    }
                     if (typeof msg.tx_prewarmed !== 'undefined') {
                         window.txPrewarmed = !!msg.tx_prewarmed;
                         updateConnectionState(isConnected);

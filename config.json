@@ -4,6 +4,8 @@
     // =========================================================================
     // Callsign displayed in the web interface header and transmitted in status packets
     "callsign": "N0CALL",
+    // First run safety notice flag (prompts legal & safety warnings on fresh setup; set to false after user acknowledgement)
+    "first_use": true,
 
     // =========================================================================
     // SERIAL / CAT INTERFACE (Quansheng Radio)

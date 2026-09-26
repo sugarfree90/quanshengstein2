@@ -55,6 +55,7 @@ type DTMFReport struct {
 
 type Config struct {
 	Callsign                     string `json:"callsign"`
+	FirstUse                     bool   `json:"first_use"`
 	SerialPort                   string `json:"serial_port"`
 	BaudRate                     int    `json:"baud_rate"`
 	WsHost                       string `json:"ws_host"`
@@ -107,6 +108,7 @@ type Config struct {
 
 var defaultCfg = Config{
 	Callsign:                    "SP3MM",
+	FirstUse:                    true,
 	SerialPort:                  "/dev/ttyACM0",
 	BaudRate:                    38400,
 	WsHost:                      "0.0.0.0",
@@ -578,6 +580,9 @@ func loadAppConfig() Config {
 
 	// Populate new or missing fields with defaults
 	modified := false
+	if _, exists := raw["first_use"]; !exists {
+		cfg.FirstUse = true
+	}
 	if cfg.Callsign == "" {
 		cfg.Callsign = defaultCfg.Callsign
 		modified = true
@@ -706,6 +711,36 @@ func loadAppConfig() Config {
 	}
 
 	return cfg
+}
+
+func updateFirstUseInConfigFile(val bool) {
+	data, err := os.ReadFile(cfgFile)
+	if err != nil {
+		log.Printf("[Config] Warning: Failed to read %s to update first_use: %v", cfgFile, err)
+		return
+	}
+	re := regexp.MustCompile(`(?i)("first_use"\s*:\s*)(true|false)`)
+	var updated []byte
+	valStr := "false"
+	if val {
+		valStr = "true"
+	}
+	if re.Match(data) {
+		updated = re.ReplaceAll(data, []byte("${1}"+valStr))
+	} else {
+		reCallsign := regexp.MustCompile(`(?m)(^[\t ]*"callsign"\s*:\s*"[^"]*",?.*$)`)
+		if reCallsign.Match(data) {
+			updated = reCallsign.ReplaceAll(data, []byte("${1}\n    // First run safety notice flag (prompts legal & safety warnings on fresh setup; set to false after user acknowledgement)\n    \"first_use\": "+valStr+","))
+		} else {
+			log.Printf("[Config] Could not find insertion point for first_use in %s", cfgFile)
+			return
+		}
+	}
+	if err := os.WriteFile(cfgFile, updated, 0644); err != nil {
+		log.Printf("[Config] Failed to save updated first_use to %s: %v", cfgFile, err)
+	} else {
+		log.Printf("[Config] Successfully persisted first_use = %v in %s", val, cfgFile)
+	}
 }
 
 var (
@@ -2100,6 +2135,7 @@ func buildSyncDBMessage() []byte {
 		"cmd":              "sync_db",
 		"db":               radioDB,
 		"callsign":         curCfg.Callsign,
+		"first_use":        curCfg.FirstUse,
 		"single_user_mode": curCfg.SingleUserMode,
 		"tx_prewarmed":     curCfg.TxPrewarmed,
 		"mqtt": map[string]interface{}{
@@ -3577,6 +3613,18 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					dispatchToClients(buildSyncDBMessage())
 				}
 			}
+
+		case "ack_first_use", "set_first_use":
+			val := false
+			if v, ok := data["value"].(bool); ok {
+				val = v
+			}
+			configLock.Lock()
+			appCfg.FirstUse = val
+			configLock.Unlock()
+			updateFirstUseInConfigFile(val)
+			log.Printf("[Config] User acknowledged first-use safety & legal notice. first_use set to %v.", val)
+			dispatchToClients(buildSyncDBMessage())
 
 		case "save_ptt_audio_sync":
 			if enabled, ok := data["enabled"].(bool); ok {
