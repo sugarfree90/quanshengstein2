@@ -6,9 +6,6 @@ if (-not (Test-Path $OutDir)) {
 }
 
 $Targets = @(
-    @{ OS="windows"; Arch="amd64" },
-    @{ OS="windows"; Arch="386" },
-    @{ OS="windows"; Arch="arm64" },
     @{ OS="linux"; Arch="amd64" },
     @{ OS="linux"; Arch="386" },
     @{ OS="linux"; Arch="arm64" },
