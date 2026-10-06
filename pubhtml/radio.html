@@ -583,6 +583,48 @@
                     </div>
                 </div>
             </div>
+
+            <div class="cfg-section" style="border-top: 1px solid #333; padding-top: 10px; margin-top: 8px;">
+                <div class="cfg-section-title" style="display:flex; justify-content:space-between; align-items:center;">
+                    <span>📡 MQTT Telemetry &amp; S-Meter</span>
+                    <span id="mqtt-status-badge" style="font-size:10px; padding:2px 6px; border-radius:3px; background:#333; color:#aaa;">Disconnected</span>
+                </div>
+                
+                <div style="margin-top:6px;">
+                    <label style="font-size:12px; color:#aaa; display:block;">MQTT Broker:</label>
+                    <input type="text" id="mqtt-broker" style="width:100%; box-sizing:border-box; margin-top:3px; padding:5px 8px; font-size:12px; background:#111; border:1px solid #444; border-radius:4px; color:#fff;" placeholder="tcp://127.0.0.1:1883">
+                </div>
+
+                <div style="margin-top:8px; display:flex; flex-direction:column; gap:6px;">
+                    <label style="font-size:12px; color:#ddd; display:flex; align-items:center; gap:6px; cursor:pointer;">
+                        <input type="checkbox" id="mqtt-smeter-enable" style="accent-color:var(--accent); cursor:pointer;">
+                        <strong>Publish S-Meter / Signal (dBm)</strong>
+                    </label>
+                    <div id="mqtt-smeter-topic-box" style="margin-left:20px;">
+                        <label style="font-size:11px; color:#888;">S-Meter Topic (also publishes raw dBm to &lt;topic&gt;/raw):</label>
+                        <input type="text" id="mqtt-smeter-topic" style="width:100%; box-sizing:border-box; margin-top:2px; padding:4px 6px; font-size:12px; background:#111; border:1px solid #444; border-radius:4px; color:#fff; font-family:monospace;" placeholder="radio/smeter">
+                    </div>
+
+                    <label style="font-size:12px; color:#bbb; display:flex; align-items:center; gap:6px; cursor:pointer;">
+                        <input type="checkbox" id="mqtt-status-enable" style="accent-color:var(--accent); cursor:pointer;">
+                        <span>Publish Radio Status &amp; PTT (radio/status)</span>
+                    </label>
+
+                    <label style="font-size:12px; color:#bbb; display:flex; align-items:center; gap:6px; cursor:pointer;">
+                        <input type="checkbox" id="mqtt-aprs-enable" style="accent-color:var(--accent); cursor:pointer;">
+                        <span>Publish Decoded APRS Packets (aprs/...)</span>
+                    </label>
+
+                    <label style="font-size:12px; color:#bbb; display:flex; align-items:center; gap:6px; cursor:pointer;">
+                        <input type="checkbox" id="mqtt-dtmf-enable" style="accent-color:var(--accent); cursor:pointer;">
+                        <span>Publish Decoded DTMF Tones (dtmf)</span>
+                    </label>
+                </div>
+
+                <div style="margin-top:10px; display:flex; justify-content:flex-end;">
+                    <button class="btn-action primary" onclick="saveMqttConfigFromUI()" style="width:auto; height:auto; padding:6px 14px; font-size:12px; font-weight:bold; border-radius:4px; cursor:pointer;">Save MQTT Settings</button>
+                </div>
+            </div>
         </div>
 
         <div class="preset-list" id="preset-list"></div>
@@ -2364,7 +2406,62 @@
             }
         }
 
-        window.updateMqttUI = function(cfg) {};
+        window.updateMqttUI = function(cfg) {
+            if (!cfg) return;
+            let brokerEl = document.getElementById('mqtt-broker');
+            if (brokerEl && typeof cfg.broker !== 'undefined') brokerEl.value = cfg.broker;
+            
+            let smeterChk = document.getElementById('mqtt-smeter-enable');
+            if (smeterChk && typeof cfg.smeter_enabled !== 'undefined') smeterChk.checked = !!cfg.smeter_enabled;
+            let smeterTopic = document.getElementById('mqtt-smeter-topic');
+            if (smeterTopic && typeof cfg.smeter_topic !== 'undefined') smeterTopic.value = cfg.smeter_topic;
+
+            let statusChk = document.getElementById('mqtt-status-enable');
+            if (statusChk && typeof cfg.status_enabled !== 'undefined') statusChk.checked = !!cfg.status_enabled;
+
+            let aprsChk = document.getElementById('mqtt-aprs-enable');
+            if (aprsChk && typeof cfg.aprs_enabled !== 'undefined') aprsChk.checked = !!cfg.aprs_enabled;
+
+            let dtmfChk = document.getElementById('mqtt-dtmf-enable');
+            if (dtmfChk && typeof cfg.dtmf_enabled !== 'undefined') dtmfChk.checked = !!cfg.dtmf_enabled;
+
+            let badge = document.getElementById('mqtt-status-badge');
+            if (badge && typeof cfg.connected !== 'undefined') {
+                badge.innerText = cfg.connected ? "Connected" : "Disconnected";
+                badge.style.background = cfg.connected ? "#1b5e20" : "#333";
+                badge.style.color = cfg.connected ? "#a5d6a7" : "#aaa";
+            }
+        };
+
+        window.saveMqttConfigFromUI = function() {
+            let broker = document.getElementById('mqtt-broker').value.trim() || "tcp://127.0.0.1:1883";
+            let smeterEnabled = document.getElementById('mqtt-smeter-enable').checked;
+            let smeterTopic = document.getElementById('mqtt-smeter-topic').value.trim() || "radio/smeter";
+            let statusEnabled = document.getElementById('mqtt-status-enable').checked;
+            let aprsEnabled = document.getElementById('mqtt-aprs-enable').checked;
+            let dtmfEnabled = document.getElementById('mqtt-dtmf-enable').checked;
+
+            let payload = {
+                cmd: "save_mqtt_config",
+                config: {
+                    mqtt_broker: broker,
+                    mqtt_smeter_enabled: smeterEnabled,
+                    mqtt_smeter_topic: smeterTopic,
+                    mqtt_status_enabled: statusEnabled,
+                    mqtt_aprs_enabled: aprsEnabled,
+                    mqtt_dtmf_enabled: dtmfEnabled
+                }
+            };
+            if (uiSocket && uiSocket.readyState === WebSocket.OPEN) {
+                uiSocket.send(JSON.stringify(payload));
+                let badge = document.getElementById('mqtt-status-badge');
+                if (badge) {
+                    badge.innerText = "Saving...";
+                    badge.style.background = "#ff9800";
+                    badge.style.color = "#000";
+                }
+            }
+        };
 
         window.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {

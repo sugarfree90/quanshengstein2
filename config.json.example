@@ -76,6 +76,14 @@
     // =========================================================================
     // TRANSMITTER SAFETY & WATCHDOG
     // =========================================================================
+    // PTT transmission control mode:
+    // "safe"     - (Default, Recommended) Hardware watchdog failsafe mode using CAT command 'TXS;'
+    //              renewed periodically every 450ms. If PC software crashes, hangs or USB cable
+    //              disconnects, the radio firmware automatically drops PTT after 1s (watchdog timeout).
+    //              Upon transmit release, 'RX;' command is sent twice for guaranteed carrier drop.
+    // "legacy"   - Standard CAT mode using 'TX;' on start and 'RX;' (sent twice) on stop.
+    // "hardware" - Traditional hardware PTT using serial port RTS/DTR pin switching.
+    "ptt_mode": "safe",
     // Time-Out Timer limit in seconds (automatically drops PTT if transmit exceeds this)
     "tot_limit_seconds": 3600,
     // Hardware audio drain margin for PTT Audio Sync in milliseconds (ensures all speech in flight is emitted before radio drops carrier)
@@ -129,6 +137,10 @@
     // Enable publishing radio parameters (frequency, modulation, power, PTT, squelch) to MQTT
     "mqtt_status_enabled": false,
     // Topic for radio status and PTT events
-    "mqtt_status_topic": "radio/status"
+    "mqtt_status_topic": "radio/status",
+    // Enable real-time publishing of radio S-Meter (signal strength dBm) to MQTT
+    "mqtt_smeter_enabled": false,
+    // Dedicated topic for radio S-Meter signal strength updates (dBm & S-scale JSON)
+    "mqtt_smeter_topic": "radio/smeter"
 }
 

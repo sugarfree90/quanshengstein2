@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	_ "embed"
 	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
@@ -41,6 +42,9 @@ import (
 	"github.com/pion/webrtc/v3/pkg/media"
 	"go.bug.st/serial"
 )
+
+//go:embed config.json.example
+var defaultConfigTemplate []byte
 
 // =====================================================================
 // --- STRUKTURY DANYCH I KONFIGURACJA ---
@@ -82,12 +86,15 @@ type Config struct {
 	TotLimitSeconds              int    `json:"tot_limit_seconds"`
 	PttSyncDelayMs               int    `json:"ptt_sync_delay_ms"`
 	TxPrewarmed                  bool   `json:"tx_prewarmed"`
+	PTTMode                      string `json:"ptt_mode"`
 	MQTTAPREnabled               bool   `json:"mqtt_aprs_enabled"`
 	MQTTEnabled                  bool   `json:"mqtt_enabled,omitempty"` // backward compatibility
 	MQTTDTMFEnabled              bool   `json:"mqtt_dtmf_enabled"`
 	MQTTDTMFTopic                string `json:"mqtt_dtmf_topic"`
 	MQTTStatusEnabled            bool   `json:"mqtt_status_enabled"`
 	MQTTStatusTopic              string `json:"mqtt_status_topic"`
+	MQTTSMeterEnabled            bool   `json:"mqtt_smeter_enabled"`
+	MQTTSMeterTopic              string `json:"mqtt_smeter_topic"`
 	MQTTBroker                   string `json:"mqtt_broker"`
 	MQTTAPRSTopic                string `json:"mqtt_aprs_topic"`
 	MQTTTopicPrefix              string `json:"mqtt_topic_prefix,omitempty"` // backward compatibility
@@ -133,11 +140,14 @@ var defaultCfg = Config{
 	TotLimitSeconds:             3600,
 	PttSyncDelayMs:              120,
 	TxPrewarmed:                 true,
+	PTTMode:                     "safe",
 	MQTTAPREnabled:              true,
 	MQTTDTMFEnabled:             true,
 	MQTTDTMFTopic:               "dtmf",
 	MQTTStatusEnabled:           true,
 	MQTTStatusTopic:             "radio/status",
+	MQTTSMeterEnabled:           false,
+	MQTTSMeterTopic:             "radio/smeter",
 	MQTTBroker:                  "tcp://11.1.1.50:1883",
 	MQTTAPRSTopic:               "aprs",
 	MQTTTopicPrefix:             "aprs",
@@ -555,12 +565,173 @@ func stripJSONComments(data []byte) []byte {
 	return out
 }
 
+type configTemplateEntry struct {
+	key      string
+	comments []string
+	valLine  string
+}
+
+func parseTemplateEntries(templateStr string) []configTemplateEntry {
+	var entries []configTemplateEntry
+	var currentComments []string
+	reKey := regexp.MustCompile(`^\s*"([a-zA-Z0-9_]+)"\s*:\s*(.*)$`)
+
+	lines := strings.Split(templateStr, "\n")
+	for _, rawLine := range lines {
+		trimmed := strings.TrimSpace(rawLine)
+		if trimmed == "{" || trimmed == "}" {
+			currentComments = nil
+			continue
+		}
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*") || trimmed == "" {
+			currentComments = append(currentComments, rawLine)
+			continue
+		}
+		if m := reKey.FindStringSubmatch(rawLine); len(m) > 1 {
+			k := m[1]
+			val := m[2]
+			cleanVal := strings.TrimRight(val, " \t\r")
+			cleanVal = strings.TrimSuffix(cleanVal, ",")
+
+			entries = append(entries, configTemplateEntry{
+				key:      k,
+				comments: currentComments,
+				valLine:  fmt.Sprintf("    \"%s\": %s", k, cleanVal),
+			})
+			currentComments = nil
+		}
+	}
+	return entries
+}
+
+func migrateConfigPreservingComments() {
+	userBytes, err := os.ReadFile(cfgFile)
+	if err != nil {
+		return
+	}
+
+	// Read template: prefer file on disk, fallback to embedded binary template
+	var templateBytes []byte
+	examplePath := filepath.Join(scriptDir, "config.json.example")
+	if data, err := os.ReadFile(examplePath); err == nil && len(data) > 0 {
+		templateBytes = data
+	} else if len(defaultConfigTemplate) > 0 {
+		templateBytes = defaultConfigTemplate
+	} else {
+		return
+	}
+
+	cleanUser := stripJSONComments(userBytes)
+	var userRaw map[string]interface{}
+	if err := json.Unmarshal(cleanUser, &userRaw); err != nil {
+		log.Printf("[Config] Cannot migrate %s due to JSON syntax error: %v", cfgFile, err)
+		return
+	}
+
+	entries := parseTemplateEntries(string(templateBytes))
+	var missingEntries []configTemplateEntry
+	var missingKeys []string
+
+	for _, entry := range entries {
+		if _, exists := userRaw[entry.key]; !exists {
+			missingEntries = append(missingEntries, entry)
+			missingKeys = append(missingKeys, entry.key)
+		}
+	}
+
+	if len(missingEntries) == 0 {
+		return
+	}
+
+	userContent := string(userBytes)
+	lastBraceIdx := strings.LastIndex(userContent, "}")
+	if lastBraceIdx == -1 {
+		return
+	}
+
+	prefix := userContent[:lastBraceIdx]
+	suffix := userContent[lastBraceIdx:]
+
+	// Find the last property line before '}' in prefix to ensure it has a comma
+	prefixLines := strings.Split(prefix, "\n")
+	for i := len(prefixLines) - 1; i >= 0; i-- {
+		lineTrimmed := strings.TrimSpace(prefixLines[i])
+		if lineTrimmed == "" || strings.HasPrefix(lineTrimmed, "//") || strings.HasPrefix(lineTrimmed, "/*") {
+			continue
+		}
+		// Check if line already ends with a comma (before any trailing comment)
+		hasComma := false
+		if idx := strings.Index(prefixLines[i], "//"); idx != -1 {
+			beforeComment := strings.TrimRight(prefixLines[i][:idx], " \t\r")
+			if strings.HasSuffix(beforeComment, ",") {
+				hasComma = true
+			} else {
+				prefixLines[i] = beforeComment + "," + prefixLines[i][idx:]
+				hasComma = true
+			}
+		} else {
+			clean := strings.TrimRight(prefixLines[i], " \t\r")
+			if strings.HasSuffix(clean, ",") {
+				hasComma = true
+			} else {
+				prefixLines[i] = clean + ","
+				hasComma = true
+			}
+		}
+		if hasComma {
+			break
+		}
+	}
+
+	// Format missing blocks to append
+	var newBlocks []string
+	for j, entry := range missingEntries {
+		var blockLines []string
+		if len(entry.comments) > 0 {
+			blockLines = append(blockLines, entry.comments...)
+		}
+		valLine := entry.valLine
+		if j < len(missingEntries)-1 {
+			valLine += ","
+		}
+		blockLines = append(blockLines, valLine)
+		newBlocks = append(newBlocks, strings.Join(blockLines, "\n"))
+	}
+
+	appendedSection := "\n\n" + strings.Join(newBlocks, "\n\n") + "\n"
+	updatedContent := strings.Join(prefixLines, "\n") + appendedSection + suffix
+
+	// Safety check: verify that the updated content parses as valid JSON with comments stripped
+	testClean := stripJSONComments([]byte(updatedContent))
+	var testRaw map[string]interface{}
+	if err := json.Unmarshal(testClean, &testRaw); err != nil {
+		log.Printf("[Config] Migration sanity check failed: %v. Aborting update of %s.", err, cfgFile)
+		return
+	}
+
+	if err := os.WriteFile(cfgFile, []byte(updatedContent), 0644); err != nil {
+		log.Printf("[Config] Failed to write migrated config to %s: %v", cfgFile, err)
+		return
+	}
+
+	log.Printf("[Config] Successfully migrated %s: automatically added %d new setting(s) with documentation comments: %v", cfgFile, len(missingKeys), missingKeys)
+}
+
 func loadAppConfig() Config {
 	cfg := defaultCfg
 	if _, err := os.Stat(cfgFile); os.IsNotExist(err) {
-		data, _ := json.MarshalIndent(cfg, "", "    ")
-		os.WriteFile(cfgFile, data, 0644)
-		return cfg
+		examplePath := filepath.Join(scriptDir, "config.json.example")
+		if data, err := os.ReadFile(examplePath); err == nil && len(data) > 0 {
+			_ = os.WriteFile(cfgFile, data, 0644)
+		} else if len(defaultConfigTemplate) > 0 {
+			_ = os.WriteFile(cfgFile, defaultConfigTemplate, 0644)
+		} else {
+			data, _ := json.MarshalIndent(cfg, "", "    ")
+			_ = os.WriteFile(cfgFile, data, 0644)
+		}
+		log.Printf("[Config] Initialized new configuration file at %s from template", cfgFile)
+	} else {
+		migrateConfigPreservingComments()
 	}
 
 	data, err := os.ReadFile(cfgFile)
@@ -632,6 +803,10 @@ func loadAppConfig() Config {
 		cfg.TotLimitSeconds = defaultCfg.TotLimitSeconds
 		modified = true
 	}
+	if cfg.PTTMode == "" {
+		cfg.PTTMode = defaultCfg.PTTMode
+		modified = true
+	}
 	if cfg.MQTTBroker == "" {
 		cfg.MQTTBroker = defaultCfg.MQTTBroker
 		modified = true
@@ -655,6 +830,10 @@ func loadAppConfig() Config {
 	}
 	if cfg.MQTTStatusTopic == "" {
 		cfg.MQTTStatusTopic = defaultCfg.MQTTStatusTopic
+		modified = true
+	}
+	if cfg.MQTTSMeterTopic == "" {
+		cfg.MQTTSMeterTopic = defaultCfg.MQTTSMeterTopic
 		modified = true
 	}
 	if cfg.DtmfFreq == 0 {
@@ -741,6 +920,52 @@ func updateFirstUseInConfigFile(val bool) {
 	} else {
 		log.Printf("[Config] Successfully persisted first_use = %v in %s", val, cfgFile)
 	}
+}
+
+func saveConfigPreservingComments(cfg Config) {
+	data, err := os.ReadFile(cfgFile)
+	if err != nil || !bytes.Contains(data, []byte("//")) {
+		saved, _ := json.MarshalIndent(cfg, "", "    ")
+		_ = os.WriteFile(cfgFile, saved, 0644)
+		return
+	}
+	content := string(data)
+	replaceBool := func(key string, val bool) {
+		re := regexp.MustCompile(`(?i)("` + key + `"\s*:\s*)(true|false)`)
+		if re.MatchString(content) {
+			content = re.ReplaceAllString(content, fmt.Sprintf("${1}%v", val))
+		}
+	}
+	replaceStr := func(key, val string) {
+		re := regexp.MustCompile(`("` + key + `"\s*:\s*)"[^"]*"`)
+		if re.MatchString(content) {
+			content = re.ReplaceAllString(content, fmt.Sprintf(`${1}"%s"`, val))
+		}
+	}
+	replaceInt := func(key string, val int) {
+		re := regexp.MustCompile(`("` + key + `"\s*:\s*)[0-9]+`)
+		if re.MatchString(content) {
+			content = re.ReplaceAllString(content, fmt.Sprintf(`${1}%d`, val))
+		}
+	}
+
+	replaceStr("mqtt_broker", cfg.MQTTBroker)
+	replaceStr("mqtt_client_id", cfg.MQTTClientID)
+	replaceStr("mqtt_username", cfg.MQTTUsername)
+	replaceStr("mqtt_password", cfg.MQTTPassword)
+	replaceBool("mqtt_retain", cfg.MQTTRetain)
+	replaceInt("mqtt_qos", cfg.MQTTQoS)
+	replaceBool("mqtt_aprs_enabled", cfg.MQTTAPREnabled)
+	replaceStr("mqtt_aprs_topic", cfg.MQTTAPRSTopic)
+	replaceBool("mqtt_dtmf_enabled", cfg.MQTTDTMFEnabled)
+	replaceStr("mqtt_dtmf_topic", cfg.MQTTDTMFTopic)
+	replaceBool("mqtt_status_enabled", cfg.MQTTStatusEnabled)
+	replaceStr("mqtt_status_topic", cfg.MQTTStatusTopic)
+	replaceBool("mqtt_smeter_enabled", cfg.MQTTSMeterEnabled)
+	replaceStr("mqtt_smeter_topic", cfg.MQTTSMeterTopic)
+	replaceStr("ptt_mode", cfg.PTTMode)
+
+	_ = os.WriteFile(cfgFile, []byte(content), 0644)
 }
 
 var (
@@ -927,11 +1152,15 @@ func saveDB() {
 // =====================================================================
 
 type QuanshengCAT struct {
-	portName string
-	baudRate int
-	port     serial.Port
-	lock     sync.Mutex
-	rxBuf    []byte
+	portName   string
+	baudRate   int
+	port       serial.Port
+	lock       sync.Mutex
+	rxBuf      []byte
+	txSafeMu   sync.Mutex
+	txSafeStop chan struct{}
+	txSafeWg   sync.WaitGroup
+	closed     atomic.Bool
 }
 
 func NewQuanshengCAT(portName string, baudRate int) *QuanshengCAT {
@@ -944,15 +1173,42 @@ func NewQuanshengCAT(portName string, baudRate int) *QuanshengCAT {
 }
 
 func (c *QuanshengCAT) Connect() bool {
+	if c.closed.Load() {
+		return false
+	}
 	if c.port != nil {
 		c.port.Close()
 		c.port = nil
 	}
 	c.rxBuf = nil
 	mode := &serial.Mode{BaudRate: c.baudRate}
-	p, err := serial.Open(c.portName, mode)
+
+	var p serial.Port
+	var err error
+	for attempt := 1; attempt <= 4; attempt++ {
+		if c.closed.Load() {
+			return false
+		}
+		p, err = serial.Open(c.portName, mode)
+		if err == nil {
+			break
+		}
+		errStr := err.Error()
+		if strings.Contains(errStr, "busy") || strings.Contains(errStr, "PortBusy") {
+			if attempt < 4 {
+				log.Printf("[CAT] Port %s is temporarily busy, retrying in 350ms (attempt %d/4)...", c.portName, attempt)
+				time.Sleep(350 * time.Millisecond)
+				continue
+			}
+		}
+		break
+	}
+
 	if err != nil {
 		log.Printf("[CAT] Cannot open port %s: %v", c.portName, err)
+		if strings.Contains(err.Error(), "busy") || strings.Contains(err.Error(), "PortBusy") {
+			log.Printf("[CAT] Tip: Another process or background service (e.g. systemd 'catwebservice') is holding %s. Check with: 'sudo fuser %s' or 'sudo systemctl status catwebservice'", c.portName, c.portName)
+		}
 		return false
 	}
 	_ = p.SetReadTimeout(20 * time.Millisecond)
@@ -964,9 +1220,17 @@ func (c *QuanshengCAT) Connect() bool {
 }
 
 func (c *QuanshengCAT) Close() {
+	if !c.closed.CompareAndSwap(false, true) {
+		return
+	}
+	c.stopSafeTx()
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	if c.port != nil {
+		_ = c.port.SetDTR(false)
+		_ = c.port.SetRTS(false)
+		_ = c.port.ResetInputBuffer()
+		_ = c.port.ResetOutputBuffer()
 		_ = c.port.Close()
 		c.port = nil
 		log.Printf("[CAT] Closed serial port %s cleanly.", c.portName)
@@ -1032,20 +1296,33 @@ func (c *QuanshengCAT) readUntil(delim byte, timeout time.Duration) (string, err
 	return "", fmt.Errorf("timeout reading from port")
 }
 
-func (c *QuanshengCAT) sendRaw(cmd string) error {
+func (c *QuanshengCAT) rawSendLocked(cmd string) error {
+	if c.closed.Load() {
+		return fmt.Errorf("CAT is closed")
+	}
 	if c.port == nil {
 		if !c.Connect() {
 			return fmt.Errorf("no connection")
 		}
 	}
-	payload := []byte(cmd + ";")
-	_, err := c.port.Write(payload)
+	if !strings.HasSuffix(cmd, ";") {
+		cmd += ";"
+	}
+	_, err := c.port.Write([]byte(cmd))
 	return err
+}
+
+func (c *QuanshengCAT) sendRaw(cmd string) error {
+	return c.rawSendLocked(cmd)
 }
 
 func (c *QuanshengCAT) Send(cmd string, expectReply bool) (string, error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
+
+	if c.closed.Load() {
+		return "", fmt.Errorf("CAT is closed")
+	}
 
 	if c.port == nil {
 		if !c.Connect() {
@@ -1058,7 +1335,9 @@ func (c *QuanshengCAT) Send(cmd string, expectReply bool) (string, error) {
 	payload := []byte(cmd + ";")
 	_, err := c.port.Write(payload)
 	if err != nil {
-		c.Connect()
+		if !c.closed.Load() {
+			c.Connect()
+		}
 		return "", err
 	}
 
@@ -1076,6 +1355,10 @@ func (c *QuanshengCAT) ScanFast(freqHz int, ticks int) (int, int, bool, error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
+	if c.closed.Load() {
+		return 0, 0, false, fmt.Errorf("CAT is closed")
+	}
+
 	if c.port == nil {
 		if !c.Connect() {
 			return 0, 0, false, fmt.Errorf("no connection")
@@ -1090,7 +1373,9 @@ func (c *QuanshengCAT) ScanFast(freqHz int, ticks int) (int, int, bool, error) {
 
 		_, err := c.port.Write([]byte(cmd))
 		if err != nil {
-			c.Connect()
+			if !c.closed.Load() {
+				c.Connect()
+			}
 			return 0, 0, false, err
 		}
 
@@ -1159,6 +1444,10 @@ func (c *QuanshengCAT) GetSMeter() (string, error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
+	if c.closed.Load() {
+		return "", fmt.Errorf("CAT is closed")
+	}
+
 	if c.port == nil {
 		if !c.Connect() {
 			return "", fmt.Errorf("no connection")
@@ -1168,7 +1457,9 @@ func (c *QuanshengCAT) GetSMeter() (string, error) {
 	c.drainPending()
 	_, err := c.port.Write([]byte("S1;"))
 	if err != nil {
-		c.Connect()
+		if !c.closed.Load() {
+			c.Connect()
+		}
 		return "", err
 	}
 
@@ -1226,23 +1517,150 @@ func handleDTMFReport(raw string) {
 	}
 }
 
+func (c *QuanshengCAT) stopSafeTx() {
+	c.txSafeMu.Lock()
+	stopCh := c.txSafeStop
+	c.txSafeStop = nil
+	c.txSafeMu.Unlock()
+
+	if stopCh != nil {
+		close(stopCh)
+		c.txSafeWg.Wait()
+	}
+}
+
+func (c *QuanshengCAT) safeTxKeepaliveLoop(stopCh chan struct{}) {
+	defer c.txSafeWg.Done()
+	ticker := time.NewTicker(450 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stopCh:
+			return
+		case <-shutdownCtx.Done():
+			return
+		case <-ticker.C:
+			if c.closed.Load() {
+				return
+			}
+			select {
+			case <-stopCh:
+				return
+			default:
+			}
+			c.lock.Lock()
+			select {
+			case <-stopCh:
+				c.lock.Unlock()
+				return
+			default:
+			}
+			if !c.closed.Load() {
+				if err := c.rawSendLocked("TXS;"); err != nil {
+					log.Printf("[CAT] Failed to send safe TX keepalive: %v", err)
+				}
+			}
+			c.lock.Unlock()
+		}
+	}
+}
+
 func (c *QuanshengCAT) TxOn() {
+	if c.closed.Load() {
+		return
+	}
+	c.stopSafeTx()
+
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	if c.port != nil {
-		c.port.SetRTS(false)
-		c.port.SetDTR(true)
+
+	if c.closed.Load() {
+		return
+	}
+
+	configLock.RLock()
+	mode := strings.ToLower(strings.TrimSpace(appCfg.PTTMode))
+	configLock.RUnlock()
+	if mode == "" {
+		mode = "safe"
+	}
+
+	log.Printf("[CAT] Engaging PTT (mode: %s)", mode)
+
+	switch mode {
+	case "legacy":
+		if c.port != nil {
+			c.port.SetRTS(false)
+			c.port.SetDTR(false)
+		}
+		_ = c.rawSendLocked("TX;")
+
+	case "hardware", "hw", "dtr", "rts_dtr", "sprzetowy":
+		if c.port != nil {
+			c.port.SetRTS(false)
+			c.port.SetDTR(true)
+		}
+
+	case "safe":
+		fallthrough
+	default:
+		if c.port != nil {
+			c.port.SetRTS(false)
+			c.port.SetDTR(false)
+		}
+		_ = c.rawSendLocked("TXS;")
+
+		c.txSafeMu.Lock()
+		stopCh := make(chan struct{})
+		c.txSafeStop = stopCh
+		c.txSafeWg.Add(1)
+		c.txSafeMu.Unlock()
+
+		go c.safeTxKeepaliveLoop(stopCh)
 	}
 }
 
 func (c *QuanshengCAT) RxOn() {
+	c.stopSafeTx()
+
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	if c.port != nil {
-		c.port.SetDTR(false)
-		c.port.SetRTS(false)
-		c.port.ResetInputBuffer()
-		c.port.ResetOutputBuffer()
+
+	configLock.RLock()
+	mode := strings.ToLower(strings.TrimSpace(appCfg.PTTMode))
+	configLock.RUnlock()
+	if mode == "" {
+		mode = "safe"
+	}
+
+	log.Printf("[CAT] Disengaging PTT (mode: %s)", mode)
+
+	switch mode {
+	case "hardware", "hw", "dtr", "rts_dtr", "sprzetowy":
+		if c.port != nil {
+			c.port.SetDTR(false)
+			c.port.SetRTS(false)
+			c.port.ResetInputBuffer()
+			c.port.ResetOutputBuffer()
+		}
+
+	case "legacy", "safe":
+		fallthrough
+	default:
+		if c.port != nil {
+			c.port.SetDTR(false)
+			c.port.SetRTS(false)
+			if !c.closed.Load() {
+				_ = c.rawSendLocked("RX;")
+				time.Sleep(15 * time.Millisecond)
+				_ = c.rawSendLocked("RX;")
+			}
+			if c.port != nil {
+				c.port.ResetInputBuffer()
+				c.port.ResetOutputBuffer()
+			}
+		}
 	}
 }
 
@@ -1378,17 +1796,20 @@ func ensureTxAudioProcess() {
 
 func startTxAudioProcess() {
 	txLock.Lock()
-	defer txLock.Unlock()
-
+	oldProc := txAudioProcess
+	txAudioProcess = nil
 	if txAudioStdin != nil {
 		txAudioStdin.Close()
 		txAudioStdin = nil
 	}
-	if txAudioProcess != nil && txAudioProcess.Process != nil {
-		_ = txAudioProcess.Process.Kill()
-		_ = txAudioProcess.Wait()
-		txAudioProcess = nil
+	txLock.Unlock()
+
+	if oldProc != nil && oldProc.Process != nil {
+		killProcessCleanly(oldProc)
 	}
+
+	txLock.Lock()
+	defer txLock.Unlock()
 
 	txCmdStr := getTxAudioCmd()
 	if strings.TrimSpace(txCmdStr) == "" {
@@ -2139,10 +2560,14 @@ func buildSyncDBMessage() []byte {
 		"single_user_mode": curCfg.SingleUserMode,
 		"tx_prewarmed":     curCfg.TxPrewarmed,
 		"mqtt": map[string]interface{}{
-			"aprs_enabled":  curCfg.MQTTAPREnabled,
-			"dtmf_enabled":  curCfg.MQTTDTMFEnabled,
-			"enabled":       curCfg.MQTTAPREnabled,
-			"broker":        curCfg.MQTTBroker,
+			"aprs_enabled":   curCfg.MQTTAPREnabled,
+			"dtmf_enabled":   curCfg.MQTTDTMFEnabled,
+			"status_enabled": curCfg.MQTTStatusEnabled,
+			"status_topic":   curCfg.MQTTStatusTopic,
+			"smeter_enabled": curCfg.MQTTSMeterEnabled,
+			"smeter_topic":   curCfg.MQTTSMeterTopic,
+			"enabled":        curCfg.MQTTAPREnabled,
+			"broker":         curCfg.MQTTBroker,
 			"aprs_topic":    curCfg.MQTTAPRSTopic,
 			"topic_prefix":  curCfg.MQTTAPRSTopic,
 			"dtmf_topic":    curCfg.MQTTDTMFTopic,
@@ -2317,6 +2742,12 @@ func sMeterPoller() {
 	var silenceCount int
 
 	for {
+		select {
+		case <-shutdownCtx.Done():
+			return
+		default:
+		}
+
 		hwScanLock.Lock()
 		active := hwScanActive
 		paused := hwScanPaused
@@ -2367,6 +2798,18 @@ func sMeterPoller() {
 					"sql": sql,
 				})
 				dispatchToClients(msg)
+
+				stateLock.RLock()
+				curFreq := radioState.Freq
+				stateLock.RUnlock()
+
+				mqttManager.PublishSMeter(SMeterReport{
+					Timestamp: time.Now().UTC().Format(time.RFC3339),
+					Dbm:       dbm,
+					Sql:       sql,
+					Squelch:   isOpen,
+					Freq:      curFreq,
+				})
 
 				// Independent resume logic in backend:
 				// When the scanner stopped on a signal (PAUSED) and squelch closed (sql == 0)
@@ -2419,6 +2862,12 @@ func sMeterPoller() {
 
 func hwScannerTask() {
 	for {
+		select {
+		case <-shutdownCtx.Done():
+			return
+		default:
+		}
+
 		hwScanLock.Lock()
 		active := hwScanActive
 		paused := hwScanPaused
@@ -2489,6 +2938,14 @@ func hwScannerTask() {
 			dispatchToClients(msg)
 
 			if isOpen {
+				mqttManager.PublishSMeter(SMeterReport{
+					Timestamp: time.Now().UTC().Format(time.RFC3339),
+					Dbm:       dbm,
+					Sql:       openInt,
+					Squelch:   true,
+					Freq:      freq,
+				})
+
 				dbLock.RLock()
 				action := radioDB.ScanConfig.Action
 				dbLock.RUnlock()
@@ -3653,6 +4110,12 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				if v, ok := cfgMap["mqtt_status_enabled"].(bool); ok {
 					appCfg.MQTTStatusEnabled = v
 				}
+				if v, ok := cfgMap["mqtt_smeter_enabled"].(bool); ok {
+					appCfg.MQTTSMeterEnabled = v
+				}
+				if v, ok := cfgMap["mqtt_smeter_topic"].(string); ok && strings.TrimSpace(v) != "" {
+					appCfg.MQTTSMeterTopic = strings.TrimSpace(v)
+				}
 				if v, ok := cfgMap["mqtt_broker"].(string); ok && strings.TrimSpace(v) != "" {
 					appCfg.MQTTBroker = strings.TrimSpace(v)
 				}
@@ -3693,9 +4156,8 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				savedCfg := appCfg
 				configLock.Unlock()
 
-				saved, _ := json.MarshalIndent(savedCfg, "", "    ")
-				_ = os.WriteFile(cfgFile, saved, 0644)
-				log.Printf("[MQTT] Updated MQTT settings in config.json (APRS: %v, DTMF: %v, Status: %v, broker: %s)", savedCfg.MQTTAPREnabled, savedCfg.MQTTDTMFEnabled, savedCfg.MQTTStatusEnabled, savedCfg.MQTTBroker)
+				saveConfigPreservingComments(savedCfg)
+				log.Printf("[MQTT] Updated MQTT settings in config.json (APRS: %v, DTMF: %v, Status: %v, SMeter: %v, broker: %s)", savedCfg.MQTTAPREnabled, savedCfg.MQTTDTMFEnabled, savedCfg.MQTTStatusEnabled, savedCfg.MQTTSMeterEnabled, savedCfg.MQTTBroker)
 
 				mqttManager.UpdateConfig(savedCfg)
 
@@ -3712,6 +4174,8 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 						"mqtt_aprs_enabled":             savedCfg.MQTTAPREnabled,
 						"mqtt_dtmf_enabled":             savedCfg.MQTTDTMFEnabled,
 						"mqtt_status_enabled":           savedCfg.MQTTStatusEnabled,
+						"mqtt_smeter_enabled":           savedCfg.MQTTSMeterEnabled,
+						"mqtt_smeter_topic":             savedCfg.MQTTSMeterTopic,
 						"mqtt_enabled":                  savedCfg.MQTTAPREnabled,
 						"mqtt_broker":                   savedCfg.MQTTBroker,
 						"mqtt_aprs_topic":               savedCfg.MQTTAPRSTopic,
@@ -3728,6 +4192,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					},
 				})
 				dispatchToClients(resp)
+				dispatchToClients(buildSyncDBMessage())
 			}
 
 		case "get_mqtt_config":
@@ -3741,6 +4206,8 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					"mqtt_aprs_enabled":             savedCfg.MQTTAPREnabled,
 					"mqtt_dtmf_enabled":             savedCfg.MQTTDTMFEnabled,
 					"mqtt_status_enabled":           savedCfg.MQTTStatusEnabled,
+					"mqtt_smeter_enabled":           savedCfg.MQTTSMeterEnabled,
+					"mqtt_smeter_topic":             savedCfg.MQTTSMeterTopic,
 					"mqtt_enabled":                  savedCfg.MQTTAPREnabled,
 					"mqtt_broker":                   savedCfg.MQTTBroker,
 					"mqtt_aprs_topic":               savedCfg.MQTTAPRSTopic,
@@ -4381,15 +4848,19 @@ func performGracefulShutdown(httpServer, httpsServer, proxyServer *http.Server) 
 		os.Exit(0)
 	}()
 
-	// 1. Signal background workers to terminate
+	// 1. Signal background workers to terminate first!
 	log.Println("[Shutdown] 1/7 Stopping background worker routines...")
 	if shutdownCancel != nil {
 		shutdownCancel()
 	}
 
-	// 2. Shut down HTTP/HTTPS/Proxy servers to release TCP ports immediately
-	log.Println("[Shutdown] 2/7 Closing HTTP/HTTPS listeners to free network ports...")
-	shutdownCtxTimeout, cancelTimeout := context.WithTimeout(context.Background(), 2*time.Second)
+	// 2. Disconnect connected WebSocket clients cleanly so HTTP shutdown will not block
+	log.Println("[Shutdown] 2/7 Disconnecting connected web clients cleanly...")
+	closeAllClients()
+
+	// 3. Shut down HTTP/HTTPS/Proxy servers to release TCP ports immediately
+	log.Println("[Shutdown] 3/7 Closing HTTP/HTTPS listeners to free network ports...")
+	shutdownCtxTimeout, cancelTimeout := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancelTimeout()
 
 	if httpServer != nil {
@@ -4408,19 +4879,15 @@ func performGracefulShutdown(httpServer, httpsServer, proxyServer *http.Server) 
 		}
 	}
 
-	// 3. Notify and close WebSocket clients
-	log.Println("[Shutdown] 3/7 Disconnecting connected web clients cleanly...")
-	closeAllClients()
-
-	// 4. Disengage transmitter and close CAT serial port
+	// 4. Safely disengage radio transmitter (PTT OFF) and close CAT serial port
 	log.Println("[Shutdown] 4/7 Safely disengaging radio transmitter (PTT OFF) & closing serial port...")
 	if radio != nil {
 		radio.RxOn()
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(30 * time.Millisecond)
 		radio.Close()
 	}
 
-	// 5. Terminate audio subprocesses
+	// 5. Terminate audio subprocesses to release ALSA sound cards and handles
 	log.Println("[Shutdown] 5/7 Terminating audio subprocesses (ffmpeg, aplay, direwolf)...")
 	forceStopTxAudioProcess()
 

@@ -7,7 +7,7 @@ A comprehensive, step-by-step installation and deployment guide for Single Board
 ## Table of Contents
 
 1. [Hardware Requirements & Wiring](#1-hardware-requirements--wiring)
-2. [Base System Packages & Codecs](#2-base-system-packages--codecs)
+2. [Base System Packages & Dependencies](#2-base-system-packages--dependencies)
 3. [User Permissions (Serial & Audio Groups)](#3-user-permissions-serial--audio-groups)
 4. [Software Installation](#4-software-installation)
    - [Option A: Running Pre-Compiled Binaries from `./build/` (Recommended)](#option-a-running-pre-compiled-binaries-from-build-recommended)
@@ -16,7 +16,7 @@ A comprehensive, step-by-step installation and deployment guide for Single Board
    - [A. Radio Serial CAT Interface (USB-UART)](#a-radio-serial-cat-interface-usb-uart)
    - [B. ALSA Sound Card Devices (Audio RX / TX)](#b-alsa-sound-card-devices-audio-rx--tx)
 6. [Application Configuration (`config.json`)](#6-application-configuration-configjson)
-7. [APRS Modem Configuration (`direwolf.conf`)](#7-aprs-modem-configuration-direwolfconf)
+7. [APRS Modem Configuration (`direwolf.conf`) (Optional)](#7-aprs-modem-configuration-direwolfconf-optional)
 8. [Automated Systemd Service Setup](#8-automated-systemd-service-setup)
 9. [Log Monitoring & Diagnostics](#9-log-monitoring--diagnostics)
 10. [OpenWebRX Configuration (Optional)](#10-openwebrx-configuration-optional)
@@ -40,15 +40,24 @@ A comprehensive, step-by-step installation and deployment guide for Single Board
 
 ---
 
-## 2. Base System Packages & Codecs
+## 2. Base System Packages & Dependencies
 
-Update your package repositories and install the required multimedia codecs, audio utilities, build tools, and Direwolf modem:
+The application is written in 100% pure Go with zero CGO dependencies and automatically generates its own HTTPS TLS certificates on first startup. Therefore, **no heavy compilers, build-essential, or libasound development libraries are required**.
+
+To get started on Debian / Ubuntu / Raspberry Pi OS / Armbian, you only need `git` to download the project and `ffmpeg` with `alsa-utils` for audio streaming:
 
 ```bash
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y build-essential curl wget tar openssl \
-                    ffmpeg alsa-utils libasound2-dev direwolf
+sudo apt update && sudo apt install -y git ffmpeg alsa-utils
 ```
+
+> [!NOTE]
+> * **`git`**: Used to clone and update the repository.
+> * **`ffmpeg`**: Handles audio streaming between the radio ALSA sound card and the WebRTC engine (Opus).
+> * **`alsa-utils`**: Provides `aplay` (used by the TX audio player) and `alsamixer` / `arecord` to configure and inspect sound cards.
+> * **`direwolf` (Optional)**: Only needed if you plan to use the automated background APRS IGate mode (`"use_direwolf": true`). If you do not use APRS, Direwolf is not needed:
+>   ```bash
+>   sudo apt install -y direwolf  # Optional, only for APRS IGate
+>   ```
 
 ---
 
@@ -71,38 +80,50 @@ sudo usermod -aG dialout,audio $USER
 
 ## 4. Software Installation
 
-Create your project working directory and navigate to it:
+Clone the repository to your home directory:
 
 ```bash
-mkdir -p ~/catWebservice
+git clone https://github.com/sugarfree90/quanshengstein2.git ~/catWebservice
 cd ~/catWebservice
 ```
 
 ### Option A: Running Pre-Compiled Binaries from `./build/` (Recommended)
 
-Pre-compiled, optimized static binaries for all major architectures are provided in the `build/` directory:
+Pre-compiled, optimized static binaries for all major architectures are provided in the `build/` directory (no Go compiler needed):
 
 | CPU Architecture | Binary File | Example SBC Hardware |
 | :--- | :--- | :--- |
 | **ARM64 (64-bit)** | `catWebservice_linux_arm64` | Orange Pi Zero 3, Orange Pi 3 LTS, Raspberry Pi 3/4/5 (64-bit OS) |
-| **ARMv7 (32-bit)** | `catWebservice_linux_armv7` | Orange Pi One, Orange Pi PC, Raspberry Pi 2/3 (32-bit OS) |
+| **ARMv7 (32-bit)** | `catWebservice_linux_armv7` | Orange Pi One, Orange Pi PC, Raspberry Pi 2/3/4 (32-bit OS) |
+| **ARMv6 (32-bit)** | `catWebservice_linux_armv6` | Raspberry Pi 1 (Model B/B+), Raspberry Pi Zero / Zero W |
 | **x86_64 (AMD64)** | `catWebservice_linux_amd64` | Standard Linux PCs, Virtual Machines, Cloud VPS |
+| **x86 (386)** | `catWebservice_linux_386` | Legacy 32-bit x86 computers |
 
 Check your system architecture:
 ```bash
 uname -m
 ```
 
-Copy the appropriate binary to your working directory:
+Copy the appropriate binary to your working directory and make it executable:
 ```bash
-# For 64-bit ARM:
+# For 64-bit ARM (Raspberry Pi 4/5 64-bit, Orange Pi Zero 3):
 cp build/catWebservice_linux_arm64 ./catWebservice
 chmod +x ./catWebservice
 
-# Or for 32-bit ARM:
+# Or for Raspberry Pi 1 / Pi Zero (ARMv6):
+# cp build/catWebservice_linux_armv6 ./catWebservice
+# chmod +x ./catWebservice
+
+# Or for 32-bit ARM (Raspberry Pi 2/3 32-bit, Orange Pi One):
 # cp build/catWebservice_linux_armv7 ./catWebservice
 # chmod +x ./catWebservice
 ```
+
+### Automatic Configuration File Creation & Safe Updates
+When `catWebservice` starts for the first time, it automatically creates your local `config.json` from the included `config.json.example` template.
+
+> [!TIP]
+> **Safe Updates via `git pull`:** Your `config.json` is git-ignored and will **never be overwritten** when updating software. Whenever a new version introduces new configuration options, `catWebservice` automatically appends them to your `config.json` on startup while preserving all your existing values and comments!
 
 ---
 
@@ -172,22 +193,30 @@ alsamixer -c 1
 
 ## 6. Application Configuration (`config.json`)
 
-Open the configuration file in your preferred text editor:
+On first launch (or by manually copying `cp config.json.example config.json`), open the configuration file in your preferred text editor:
 ```bash
 nano config.json
 ```
 
 Adjust the key settings:
 1. **`callsign`**: Your amateur radio callsign (e.g., `"N0CALL"`).
-2. **`serial_port`**: The radio's serial port path (e.g., `"/dev/ttyACM0"`).
-3. **`audio_rx_device`**: ALSA recording card index (e.g., `"1,0"` or `"plughw:1,0"`).
-4. **`audio_tx_device`**: ALSA playback card index (e.g., `"1,0"` or `"plughw:1,0"`).
-5. **`mqtt_broker`**: URL of your MQTT broker (e.g., `"tcp://127.0.0.1:1883"`).
-6. **`log_mode`**: Keep set to `"shm"` to store logs in RAM (`/dev/shm`), protecting your MicroSD card against write exhaustion.
+2. **`serial_port`**: The radio's serial port path (typically `"/dev/ttyACM0"` for AIOC, or `"/dev/ttyUSB0"` for CH340 programming cables).
+3. **`ptt_mode`**: Select your PTT keying mode:
+   - `"safe"` **(Default & Recommended)**: Uses CAT command `TXS;` with a 1-second hardware watchdog timer on the radio. The server sends keepalive packets every 450 ms during transmission. If the software crashes or the USB cable disconnects, transmission automatically aborts in 1 second. On release, `RX;` is sent twice for reliable disengagement.
+   - `"legacy"`: Standard CAT commands `TX;` and `RX;`.
+   - `"hardware"`: Physical PTT control via UART DTR/RTS hardware lines.
+4. **`audio_rx_device`**: ALSA recording device (e.g., `"1,0"` or `"plughw:1,0"`).
+5. **`audio_tx_device`**: ALSA playback device (e.g., `"1,0"` or `"plughw:1,0"`).
+6. **`mqtt_broker`**: URL of your MQTT broker (e.g., `"tcp://127.0.0.1:1883"`).
+7. **`mqtt_smeter_enabled`**: Publish real-time S-Meter signal levels and squelch status to `mqtt_smeter_topic` (default: `"radio/smeter"`).
+8. **`log_mode`**: Keep set to `"shm"` to store logs in RAM tmpfs (`/dev/shm`), protecting your MicroSD card against write exhaustion.
 
 ---
 
-## 7. APRS Modem Configuration (`direwolf.conf`)
+## 7. APRS Modem Configuration (`direwolf.conf`) (Optional)
+
+> [!NOTE]
+> This step is only required if you have installed `direwolf` and enabled the automated background APRS IGate mode (`"use_direwolf": true` in `config.json`). If you do not use APRS, you can skip this step.
 
 Edit the Direwolf modem configuration file:
 ```bash

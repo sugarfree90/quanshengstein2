@@ -7,6 +7,7 @@ import (
 	"log"
 	"math"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,13 @@ type MQTTManager struct {
 	connected bool
 	lock      sync.RWMutex
 	cfg       Config
+
+	smeterLock      sync.Mutex
+	latestSMeter    *SMeterReport
+	smeterNotify    chan struct{}
+	workerStop      chan struct{}
+	workerDone      chan struct{}
+	isWorkerRunning bool
 }
 
 var mqttManager = &MQTTManager{}
@@ -26,7 +34,10 @@ var mqttManager = &MQTTManager{}
 func (m *MQTTManager) Init(cfg Config) {
 	m.lock.Lock()
 	m.cfg = cfg
-	enabled := cfg.MQTTAPREnabled || cfg.MQTTDTMFEnabled || cfg.MQTTStatusEnabled || cfg.MQTTEnabled
+	if m.smeterNotify == nil {
+		m.smeterNotify = make(chan struct{}, 1)
+	}
+	enabled := cfg.MQTTAPREnabled || cfg.MQTTDTMFEnabled || cfg.MQTTStatusEnabled || cfg.MQTTSMeterEnabled || cfg.MQTTEnabled
 	broker := cfg.MQTTBroker
 	m.lock.Unlock()
 
@@ -88,6 +99,7 @@ func (m *MQTTManager) Connect() {
 		m.connected = true
 		m.lock.Unlock()
 		log.Printf("[MQTT] Successfully connected to broker: %s (ClientID: %s)", broker, clientID)
+		m.startSMeterWorker()
 		go publishRadioStatus()
 	}
 
@@ -96,6 +108,7 @@ func (m *MQTTManager) Connect() {
 		m.connected = false
 		m.lock.Unlock()
 		log.Printf("[MQTT] Connection lost to broker %s: %v", broker, err)
+		m.stopSMeterWorker()
 	}
 
 	client := mqtt.NewClient(opts)
@@ -111,6 +124,7 @@ func (m *MQTTManager) Connect() {
 }
 
 func (m *MQTTManager) Disconnect() {
+	m.stopSMeterWorker()
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	if m.client != nil {
@@ -131,7 +145,7 @@ func (m *MQTTManager) IsConnected() bool {
 func (m *MQTTManager) UpdateConfig(cfg Config) {
 	m.lock.Lock()
 	m.cfg = cfg
-	enabled := cfg.MQTTAPREnabled || cfg.MQTTDTMFEnabled || cfg.MQTTStatusEnabled || cfg.MQTTEnabled
+	enabled := cfg.MQTTAPREnabled || cfg.MQTTDTMFEnabled || cfg.MQTTStatusEnabled || cfg.MQTTSMeterEnabled || cfg.MQTTEnabled
 	m.lock.Unlock()
 
 	if !enabled {
@@ -325,6 +339,151 @@ func (m *MQTTManager) PublishRadioStatus(st RadioState, ptt bool, squelch bool, 
 
 	_ = m.Publish(statusTopic, qos, retain, report)
 	log.Printf("[MQTT] Published radio status (PTT: %v, Squelch: %v, Freq: %d Hz, Mod: %s) -> %s", ptt, squelch, st.Freq, st.Mod, statusTopic)
+}
+
+type SMeterReport struct {
+	Timestamp string  `json:"timestamp"`
+	Dbm       int     `json:"dbm"`
+	Sql       int     `json:"sql"`
+	Squelch   bool    `json:"squelch"`
+	Freq      int     `json:"freq,omitempty"`
+	FreqMHz   float64 `json:"freq_mhz,omitempty"`
+}
+
+func (m *MQTTManager) startSMeterWorker() {
+	m.smeterLock.Lock()
+	if m.isWorkerRunning {
+		m.smeterLock.Unlock()
+		return
+	}
+	if m.smeterNotify == nil {
+		m.smeterNotify = make(chan struct{}, 1)
+	}
+	m.isWorkerRunning = true
+	m.workerStop = make(chan struct{})
+	m.workerDone = make(chan struct{})
+	stopCh := m.workerStop
+	doneCh := m.workerDone
+	m.smeterLock.Unlock()
+
+	go func() {
+		defer func() {
+			m.smeterLock.Lock()
+			m.isWorkerRunning = false
+			m.smeterLock.Unlock()
+			close(doneCh)
+		}()
+
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-m.smeterNotify:
+				// Single-slot conflation / flush: extract latest value and reset slot
+				m.smeterLock.Lock()
+				report := m.latestSMeter
+				m.latestSMeter = nil
+				m.smeterLock.Unlock()
+
+				if report == nil {
+					continue
+				}
+
+				select {
+				case <-stopCh:
+					return
+				default:
+				}
+
+				m.publishSMeterSync(*report)
+			}
+		}
+	}()
+}
+
+func (m *MQTTManager) stopSMeterWorker() {
+	m.smeterLock.Lock()
+	if !m.isWorkerRunning {
+		m.smeterLock.Unlock()
+		return
+	}
+	m.isWorkerRunning = false
+	close(m.workerStop)
+	doneCh := m.workerDone
+	m.smeterLock.Unlock()
+
+	select {
+	case <-doneCh:
+	case <-time.After(350 * time.Millisecond):
+	}
+}
+
+func (m *MQTTManager) PublishSMeter(report SMeterReport) {
+	m.lock.RLock()
+	enabled := m.cfg.MQTTSMeterEnabled
+	connected := m.connected && m.client != nil && m.client.IsConnected()
+	m.lock.RUnlock()
+
+	if !enabled || !connected {
+		return
+	}
+
+	m.smeterLock.Lock()
+	if !m.isWorkerRunning {
+		m.smeterLock.Unlock()
+		m.startSMeterWorker()
+		m.smeterLock.Lock()
+	}
+	if m.smeterNotify == nil {
+		m.smeterNotify = make(chan struct{}, 1)
+	}
+	// Always store only the newest reading; previous unsent reading is automatically flushed/dropped
+	m.latestSMeter = &report
+	m.smeterLock.Unlock()
+
+	// Non-blocking trigger signal
+	select {
+	case m.smeterNotify <- struct{}{}:
+	default:
+		// Worker is already notified and will grab m.latestSMeter when ready
+	}
+}
+
+func (m *MQTTManager) publishSMeterSync(report SMeterReport) {
+	m.lock.RLock()
+	client := m.client
+	if client == nil || !client.IsConnected() {
+		m.lock.RUnlock()
+		return
+	}
+	topic := strings.TrimSpace(m.cfg.MQTTSMeterTopic)
+	if topic == "" {
+		topic = "radio/smeter"
+	}
+	retain := m.cfg.MQTTRetain
+	qos := byte(m.cfg.MQTTQoS)
+	m.lock.RUnlock()
+
+	if report.Freq > 0 && report.FreqMHz == 0 {
+		report.FreqMHz = math.Round(float64(report.Freq)/1000.0) / 1000.0
+	}
+
+	data, err := json.Marshal(report)
+	if err != nil {
+		return
+	}
+
+	// 1. Publish structured JSON report with dBm, sql, freq, timestamp
+	token := client.Publish(topic, qos, retain, data)
+	if token.WaitTimeout(300 * time.Millisecond) && token.Error() != nil {
+		log.Printf("[MQTT] S-Meter publish error to %s: %v", topic, token.Error())
+		return
+	}
+
+	// 2. Also publish raw integer dBm to <topic>/raw for microcontroller OLED / LCD displays
+	rawTopic := fmt.Sprintf("%s/raw", topic)
+	tokenRaw := client.Publish(rawTopic, qos, retain, []byte(strconv.Itoa(report.Dbm)))
+	_ = tokenRaw.WaitTimeout(100 * time.Millisecond)
 }
 
 

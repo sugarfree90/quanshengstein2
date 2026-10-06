@@ -2,6 +2,10 @@
 cert.pem
 key.pem
 
+# User configuration (never overwrite user settings during git pull)
+config.json
+!config.json.example
+
 # Runtime log files
 *.log
 *.log.*

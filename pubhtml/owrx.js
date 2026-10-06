@@ -458,13 +458,89 @@ window.isScanning = false;
 let scanTimer = null;
 let scanDelay = 1200; 
 
+// --- SCREEN WAKE LOCK & PREVENT SLEEP MECHANISM ---
 let wakeLock = null;
+let wakeLockVideo = null;
+let wakeLockActive = false;
+
 async function requestWakeLock() {
-    if ('wakeLock' in navigator) {
-        try { wakeLock = await navigator.wakeLock.request('screen'); } catch (err) {}
+    wakeLockActive = true;
+    let acquired = false;
+
+    // 1. Modern Screen Wake Lock API (Chrome Android, Safari iOS 16.4+, Edge, desktop)
+    if ('wakeLock' in navigator && navigator.wakeLock && typeof navigator.wakeLock.request === 'function') {
+        try {
+            if (!wakeLock || wakeLock.released) {
+                wakeLock = await navigator.wakeLock.request('screen');
+                acquired = true;
+                console.log("[WakeLock] Screen Wake Lock acquired successfully.");
+                wakeLock.addEventListener('release', () => {
+                    console.log("[WakeLock] Screen Wake Lock released by browser/OS.");
+                    wakeLock = null;
+                    // Automatically re-request if microphone is still open and tab is visible
+                    if (wakeLockActive && micReady && document.visibilityState === 'visible') {
+                        requestWakeLock();
+                    }
+                });
+            } else {
+                acquired = true;
+            }
+        } catch (err) {
+            console.warn("[WakeLock] Screen Wake Lock request failed:", err.name, err.message);
+        }
+    }
+
+    // 2. Universal Mobile Fallback (NoSleep video loop for iOS Safari / Low-Power Mode / older mobile browsers)
+    if (!acquired || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+        try {
+            if (!wakeLockVideo) {
+                wakeLockVideo = document.createElement('video');
+                wakeLockVideo.setAttribute('playsinline', '');
+                wakeLockVideo.setAttribute('webkit-playsinline', '');
+                wakeLockVideo.setAttribute('muted', '');
+                wakeLockVideo.muted = true;
+                wakeLockVideo.loop = true;
+                wakeLockVideo.style.position = 'fixed';
+                wakeLockVideo.style.left = '-9999px';
+                wakeLockVideo.style.top = '-9999px';
+                wakeLockVideo.style.width = '1px';
+                wakeLockVideo.style.height = '1px';
+                wakeLockVideo.style.opacity = '0.001';
+                wakeLockVideo.style.pointerEvents = 'none';
+                wakeLockVideo.src = "data:video/mp4;base64,AAAAHGZ0eXBtcDQyAAAAAG1wNDJpc29tYXZjMQAAAAhmcmVlAAAAmG1kYXQAAAAAMDUwMjIwMDAwMDAxMDAxMDAwMDAyMDAwMDAwMDAwMDIwMDAwMDAwMDAwMDEwMDAwMDAwMTAwMDAwMDAwMDEwMDAwMDAwMTAwMDAwMDAwMDEwMDAwMDAwMTAwMDAwMDAwMDEwMDAwMDAwMTAwMDAwMDAwMDEwMDAwAAAAFnN0dHMAAAAAAAAAAQAAAAEAAAAAA==";
+                document.body.appendChild(wakeLockVideo);
+            }
+            if (wakeLockVideo.paused) {
+                let p = wakeLockVideo.play();
+                if (p && typeof p.then === 'function') {
+                    p.catch(e => {
+                        console.warn("[WakeLock] Fallback video play prevented:", e.message);
+                    });
+                }
+            }
+        } catch (e) {
+            console.warn("[WakeLock] Fallback video init error:", e);
+        }
     }
 }
-document.addEventListener('visibilitychange', async () => { if (wakeLock !== null && document.visibilityState === 'visible') requestWakeLock(); });
+
+function releaseWakeLock() {
+    wakeLockActive = false;
+    if (wakeLock) {
+        try { wakeLock.release(); } catch(e) {}
+        wakeLock = null;
+    }
+    if (wakeLockVideo && !wakeLockVideo.paused) {
+        try { wakeLockVideo.pause(); } catch(e) {}
+    }
+}
+
+document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState === 'visible' && (micReady || wakeLockActive)) {
+        console.log("[WakeLock] Tab became visible and microphone is ready -> re-requesting wake lock.");
+        await requestWakeLock();
+    }
+});
 
 function updateConnectionState(state) {
     isConnected = state;
@@ -972,6 +1048,7 @@ window.changeMicrophone = async function() {
             if (window.micSourceNode) window.micSourceNode.disconnect();
             window.micSourceNode = audioContext.createMediaStreamSource(micStream);
             window.updateMicRouting();
+            await requestWakeLock();
         } catch (err) { console.error("Microphone error:", err); }
     }
 };
@@ -1254,6 +1331,9 @@ async function initMicrophone() {
         micReady = true;
         micInitInProgress = false;
         
+        // Immediately keep mobile screen awake once microphone is opened
+        await requestWakeLock();
+
         updateConnectionState(isConnected);
         requestAnimationFrame(window.drawSpectrum);
     } catch (err) {
@@ -1473,7 +1553,11 @@ function createPttButton() {
         display: "flex", alignItems: "center", justifyContent: "center", transition: "background 0.3s"
     });
 
-    const handleDown = (e) => { e.preventDefault(); if(!window.isStickyPtt) setTxState(true); };
+    const handleDown = (e) => { 
+        e.preventDefault(); 
+        requestWakeLock();
+        if(!window.isStickyPtt) setTxState(true); 
+    };
     const handleUp = (e) => { e.preventDefault(); if(!window.isStickyPtt) setTxState(false); };
     const handleLeave = (e) => { e.preventDefault(); if(!window.isStickyPtt && isTransmitting) setTxState(false); };
 
@@ -1484,6 +1568,7 @@ function createPttButton() {
     btn.addEventListener("touchend", handleUp, {passive: false});
     btn.addEventListener("click", (e) => {
         e.preventDefault();
+        requestWakeLock();
         if (!micReady && window.isSessionOwner !== false && isConnected) {
             setTxState(true);
         }
@@ -1491,6 +1576,7 @@ function createPttButton() {
 
     stickyBtn.addEventListener("click", (e) => {
         e.preventDefault();
+        requestWakeLock();
         if (!isConnected) return;
         
         if (!micReady) {
@@ -1509,6 +1595,9 @@ function createPttButton() {
             setTxState(false);
         }
     });
+    stickyBtn.addEventListener("touchstart", () => {
+        requestWakeLock();
+    }, {passive: true});
 
     container.appendChild(btn);
     container.appendChild(stickyBtn);
@@ -1580,8 +1669,12 @@ window.applyProfileSettings = function() {
 
 window.addEventListener("hashchange", () => { setTimeout(window.applyProfileSettings, 300); });
 
+document.addEventListener('touchstart', () => { 
+    if (micReady && (!wakeLock || wakeLock.released)) requestWakeLock(); 
+}, {passive: true});
+
 document.addEventListener('click', (e) => { 
-    if (!wakeLock) requestWakeLock(); 
+    if (micReady && (!wakeLock || wakeLock.released)) requestWakeLock(); 
     if (audioContext && audioContext.state === 'suspended') audioContext.resume(); 
     if (e.target && (e.target.className.includes('openwebrx-bookmark') || e.target.tagName === 'OPTION')) {
         setTimeout(window.applyProfileSettings, 300);

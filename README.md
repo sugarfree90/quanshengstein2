@@ -1,9 +1,10 @@
 # Quanshengstein CAT Webservice
+# Video demonstration and quick install guide
 [![IMAGE ALT TEXT HERE](https://img.youtube.com/vi/OTFjQ77crOw/0.jpg)](https://www.youtube.com/watch?v=OTFjQ77crOw)
 
 [![Go Version](https://img.shields.io/badge/Go-1.22%2B-blue.svg)](https://golang.org)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-green.svg)](https://github.com)
-[![Architecture](https://img.shields.io/badge/Arch-ARM64%20%7C%20ARMv7%20%7C%20AMD64-orange.svg)](https://github.com)
+[![Architecture](https://img.shields.io/badge/Arch-ARM64%20%7C%20ARMv7%20%7C%20ARMv6%20%7C%20AMD64-orange.svg)](https://github.com)
 [![License](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
 
 A modern, standalone **Go (Golang)** service for complete remote control of **Quansheng UV-K1 / UV-K5 / UV-K6 / UV-5R Plus / UV-K5v3** transceivers. 
@@ -12,7 +13,7 @@ This software is specifically built to work with:
 * 📻 **Firmware:** **[uv-k1-k5v3-firmware-CAT](https://github.com/sugarfree90/uv-k1-k5v3-firmware-CAT)** by sugarfree90 – adds native CAT commands, S-Meter telemetry (`S1`), fast memory scanning (`SCF`), and DTMF packet reporting (`RD...;`).
 * 🔌 **Hardware Interface:** **[AIOC (All-In-One-Cable)](https://github.com/skuep/AIOC)** by Simon Kueppers (`skuep`) – a single compact USB-C adapter that plugs into the radio's Kenwood 2-pin connector and integrates both the **USB-UART CAT interface** (`/dev/ttyACM0`) and the **ALSA sound card** (`plughw:1,0`) in one device.
 
-It features ultra-low-latency bi-directional **WebRTC (Pion)** audio streaming, a built-in **OpenWebRX** HTTPS reverse proxy with automatic CAT overlay injection, an automated **APRS IGate (Direwolf Governor)**, **DTMF tone detection**, comprehensive **MQTT telemetry**, and an in-memory **RAM logging system** specifically designed to prevent flash memory wear on Single Board Computers (SBCs like Orange Pi and Raspberry Pi).
+It features ultra-low-latency bi-directional **WebRTC (Pion)** audio streaming, a built-in **OpenWebRX** HTTPS reverse proxy with automatic CAT overlay injection, an automated **APRS IGate (Direwolf Governor)**, **DTMF tone detection**, comprehensive **MQTT telemetry**, hardware **Safe Transmit Watchdog**, and an in-memory **RAM logging system** specifically designed to prevent flash memory wear on Single Board Computers (SBCs like Orange Pi and Raspberry Pi).
 
 ---
 
@@ -26,7 +27,7 @@ It features ultra-low-latency bi-directional **WebRTC (Pion)** audio streaming, 
 
 > [!WARNING]
 > ### 2. Hardware Safety: Remote Power Cutoff / Watchdog Required
-> * Although this service incorporates a software transmit timer (**TOT – Time-Out Timer**), unattended and remote installations carry inherent risks of:
+> * Although this service incorporates a software transmit timer (**TOT – Time-Out Timer**) and hardware failsafe watchdog (`TXS;`), unattended and remote installations carry inherent risks of:
 >   * Unexpected computer (SBC) or Linux kernel lockups / freezes,
 >   * USB / UART bus driver crashes that may leave the hardware CAT PTT line locked high in transmit mode,
 >   * Network disconnects or power brownouts.
@@ -45,7 +46,11 @@ It features ultra-low-latency bi-directional **WebRTC (Pion)** audio streaming, 
 
 ## 🌟 Key Features & Capabilities
 
-### 1. Full Serial CAT Radio Control (USB-UART)
+### 1. Full Serial CAT Radio Control & Safe Transmit Watchdog
+* **Safe Transmit Watchdog (`ptt_mode`):**
+  * `"safe"` **(Default & Recommended)**: Transmits using CAT command `TXS;` with a 1000 ms hardware failsafe timeout on the radio. The server continuously sends keepalives every 450 ms. If the host computer freezes, crashes, or the USB cable is unplugged, the transceiver automatically cuts off transmission within 1 second. On PTT release, `RX;` is sent twice for guaranteed carrier drop.
+  * `"legacy"`: Traditional CAT commands `TX;` and `RX;`.
+  * `"hardware"`: Physical PTT control via UART DTR/RTS lines.
 * **VFO Tuning:** Smooth frequency adjustments across 110–480 MHz with mouse scroll wheel, direct numeric keypad entry, or mobile touch controls.
 * **Modulation Modes:** FM, Narrow FM (NFM), AM (Airband), USB, and LSB.
 * **RF Output Power:** Multi-level power adjustments (Levels 1–7).
@@ -58,6 +63,7 @@ It features ultra-low-latency bi-directional **WebRTC (Pion)** audio streaming, 
 * **Reception (RX):** Captures audio from the radio's ALSA interface via `ffmpeg`, encodes it into Opus, and streams via WHEP directly to modern web browsers with minimal latency.
 * **Digital RX Pre-Amplifier:** Browser-side Web Audio API gain adjustment from **0.2x to 10.0x** with persistent storage in browser cookies.
 * **Transmission (TX / PTT):** Secure microphone capture in the browser (over HTTPS), streaming Opus packets over WebSocket, hardware ALSA decoding to the radio mic input, and automatic CAT PTT engagement protected by a configurable Time-Out Timer (TOT).
+* **Screen Wake Lock (Mobile Keep-Alive):** When the browser microphone is opened or audio is playing, the service activates the HTML5 Screen Wake Lock API. This prevents mobile phones and tablets from automatically dimming the screen or suspending WebRTC audio processing during long listening or QSO sessions.
 * **PTT Audio Sync (Buffer Tail & Anti-Clipping Protection):**
   * **The Problem:** In remote web operation, releasing the PTT button the moment you finish speaking often drops the transmitter carrier too soon, cutting off your final words or callsign before the buffered audio can complete its path through the browser worklet, WebSocket queue, ffmpeg pipe, and ALSA sound card buffer.
   * **The Solution:** When PTT Audio Sync is active, releasing PTT flushes the remaining microphone audio buffer to the server and maintains the radio in transmit mode (`TX`) until all buffered audio has finished playing out through ALSA.
@@ -87,7 +93,8 @@ It features ultra-low-latency bi-directional **WebRTC (Pion)** audio streaming, 
   * `{prefix}/telemetry/{CALLSIGN}` – Station telemetry channels (A1–A5, D1–D8),
   * `{prefix}/positions/{CALLSIGN}` – GPS coordinates formatted for Home Assistant *Device Tracker*.
 * **DTMF Tone Reports:** Instant MQTT publication of received DTMF codes with signal level (dBm), frequency, and UTC timestamp.
-* **Real-time Radio Status & Squelch Reporting:** The `radio/status` topic broadcasts frequency, modulation, power, repeater offset, PTT state, and squelch gate status (`squelch_open` / `squelch`). **Squelch state reporting is gated exclusively to active browser sessions**, preventing MQTT flooding during background APRS/DTMF scanning.
+* **Live S-Meter Telemetry (`radio/smeter`):** Broadcasts real-time S-Meter signal levels in dBm, squelch state, and active frequency for Home Assistant or custom dashboards.
+* **Real-time Radio Status & Squelch Reporting (`radio/status`):** Broadcasts frequency, modulation, power, repeater offset, PTT state, and squelch gate status (`squelch_open` / `squelch`). **Squelch state reporting is gated exclusively to active browser sessions**, preventing MQTT flooding during background APRS/DTMF scanning.
 
 ### 6. Tabbed Memory Scanner with Live S-Meter
 * **Channel Tabs (Scanlists):** Group channels into organized categories (e.g., *2m VHF, 70cm UHF, Airband, PMR, Marine*).
@@ -105,6 +112,10 @@ It features ultra-low-latency bi-directional **WebRTC (Pion)** audio streaming, 
   * The `📜 Logs` button in the top status bar opens a live modal streaming recent logs (500 lines) directly from memory via WebSocket channels.
   * Mirrored standard output (`stdout`) for convenient monitoring using `journalctl -u catwebservice -f`.
   * Plain text endpoint available at `https://<IP>:8443/logs`.
+
+### 8. Automatic Config Migration & Safe Updates
+* **Zero Configuration Loss:** Software updates via `git pull` will **never overwrite your `config.json`**.
+* **Intelligent Template Auto-Merge:** On startup, the service checks your existing configuration against `config.json.example`. Any newly introduced features or settings are automatically appended with their full documentation comments, leaving all your customized values untouched!
 
 ---
 
@@ -175,15 +186,16 @@ catWebservice/
 ├── mqtt_manager.go         # MQTT client manager, telemetry & squelch reporting
 ├── aprs_parser.go          # Direwolf APRS console stream parser -> JSON
 ├── logger.go               # In-memory RAM rotator (/dev/shm) & log ring buffer
-├── config.json             # Clean, pre-configured settings template (in English)
-├── direwolf.conf           # APRS Direwolf modem configuration template
+├── config.json.example     # Master settings template with full documentation comments
+├── config.json             # Active user settings (auto-created on first run, git-ignored)
+├── direwolf.conf           # APRS Direwolf modem configuration template (optional)
 ├── radio_db.json           # Default channel database with tabs (2m, 70cm, Airband, PMR)
 ├── buildAll.ps1            # Multi-architecture cross-compilation script (PowerShell)
 ├── go.mod / go.sum         # Go module definition and dependencies
 ├── build/                  # Pre-compiled, ready-to-run binaries:
 │   ├── catWebservice_linux_arm64       # 64-bit Linux (Orange Pi Zero 3, RPi 3/4/5 64-bit)
-│   ├── catWebservice_linux_armv7       # 32-bit Linux (Orange Pi One, RPi 2/3 32-bit)
-│   ├── catWebservice_linux_armv6       # Raspberry Pi Zero / 1
+│   ├── catWebservice_linux_armv7       # 32-bit Linux (Orange Pi One, RPi 2/3/4 32-bit)
+│   ├── catWebservice_linux_armv6       # Raspberry Pi 1 (Model B/B+), Pi Zero / Zero W
 │   ├── catWebservice_linux_armv5       # Legacy ARMv5 devices
 │   ├── catWebservice_linux_amd64       # Standard Linux x86_64 servers / PCs
 │   ├── catWebservice_linux_386         # 32-bit x86 Linux
@@ -202,23 +214,42 @@ catWebservice/
 For a comprehensive, step-by-step setup guide on a fresh Linux installation, see:
 👉 **[INSTALL.md](INSTALL.md)**
 
-### Option A: Using Pre-Compiled Binaries from `./build/` (No Go installation needed)
+### 1. Install Base Packages (Debian / Ubuntu / Raspberry Pi OS / Armbian)
 
-1. Identify your system architecture:
+`catWebservice` is a pure Go application with zero CGO dependencies. You only need `git`, `ffmpeg`, and `alsa-utils`:
+
+```bash
+sudo apt update && sudo apt install -y git ffmpeg alsa-utils
+```
+
+### 2. Clone Repository
+
+```bash
+git clone https://github.com/sugarfree90/quanshengstein2.git ~/catWebservice
+cd ~/catWebservice
+```
+
+### 3. Option A: Using Pre-Compiled Binaries from `./build/` (Recommended)
+
+1. Check your system architecture:
    ```bash
    uname -m
    ```
-2. Copy the matching binary to the root directory:
+2. Copy the matching binary to the project root and make it executable:
    ```bash
-   # For 64-bit ARM (Orange Pi Zero 3, Raspberry Pi 4/5 64-bit):
+   # For 64-bit ARM (Raspberry Pi 4/5 64-bit, Orange Pi Zero 3):
    cp build/catWebservice_linux_arm64 ./catWebservice
    chmod +x ./catWebservice
 
-   # Or for 32-bit ARM (Orange Pi One, Raspberry Pi 2/3 32-bit):
+   # Or for Raspberry Pi 1 / Pi Zero (ARMv6):
+   # cp build/catWebservice_linux_armv6 ./catWebservice
+   # chmod +x ./catWebservice
+
+   # Or for 32-bit ARM (Raspberry Pi 2/3 32-bit, Orange Pi One):
    # cp build/catWebservice_linux_armv7 ./catWebservice
    # chmod +x ./catWebservice
    ```
-3. Edit `config.json` with your callsign, serial port, and sound card IDs:
+3. Edit `config.json` with your callsign, serial port, and sound card IDs (auto-created on first run, or copy from template):
    ```bash
    nano config.json
    ```
@@ -258,6 +289,7 @@ All settings are described with inline comments in `config.json`. Below is a ref
 | **Station Identity** | `callsign` | Callsign displayed in UI header and MQTT status | `"N0CALL"` |
 | **Serial / CAT** | `serial_port` | Path to serial device | `"/dev/ttyACM0"` |
 | | `baud_rate` | CAT baud rate (firmware default) | `38400` |
+| | `ptt_mode` | PTT mode: `"safe"` (Watchdog 1s), `"legacy"` (`TX;`/`RX;`), `"hardware"` (DTR/RTS) | `"safe"` |
 | **Network & Web** | `ws_port` | Standard HTTP port | `8081` |
 | | `https_port` | Secure HTTPS port (required for WebRTC / mic) | `8443` |
 | **OpenWebRX Proxy** | `owrx_proxy_enabled`| Enable built-in HTTPS proxy for OpenWebRX | `true` |
@@ -274,6 +306,8 @@ All settings are described with inline comments in `config.json`. Below is a ref
 | | `mqtt_aprs_enabled` | Publish decoded APRS packets as JSON | `true` |
 | | `mqtt_dtmf_enabled` | Publish decoded DTMF codes as JSON | `true` |
 | | `mqtt_status_enabled`| Publish live radio parameters & squelch status | `true` |
+| | `mqtt_smeter_enabled`| Publish real-time S-Meter signal levels & squelch state | `true` |
+| | `mqtt_smeter_topic`  | Topic for S-Meter telemetry reports | `"radio/smeter"` |
 
 ---
 
